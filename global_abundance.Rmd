@@ -1,0 +1,585 @@
+---
+title: "Global abundance of VirSorter Contigs"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+library(ggsci)
+source('../useful.functions.R')
+```
+
+# Selection of Phages for Study
+
+We need to add the following:
+
+1. 370 contigs > 10k were extracted from Luo et al (from here; https://www.imicrobe.us/#/publications/138) and put through VirSorter
+2. uvMed (836 over 10k)
+3. uvDeep (99 over 10k)
+4. vSAGs (39 over 10k)
+5. Autolykoviridae from Polz et al 2017 (16 over 10k)
+6. L4_short (1259 over 10k)
+7. L4_hybrid (1864 over 10k)
+7. L4_pilon (600 over 10k)
+8. GOV (16929 over 10k)
+
+These were all appended to each other and re-run through VirSorter 1.03 on Cyverse so that they were all gene called the same way, with appropriate phage cluster names.
+
+# VirSorter results
+
+The location of these files is:
+
+`/iplant/home/btemperton/all_vcontact`
+
+The key files have been copied to:
+
+`Warwick_Dugdale_PhD/data/L4.virome/full.virsorter/`
+
+Once passed through VirSorter we had the following breakdown:
+
+```{r, message=FALSE, warning=FALSE}
+library(magrittr)
+library(knitr)
+virsorter_out <- read_csv('../../data/L4.virome/full.virsorter/VIRSorter_global-phage-signal.csv', 
+                          comment='#', 
+                          col_names = FALSE) %>% select(c(1,2,5,6)) %>% 
+  set_colnames(c('contig', 'nb_genes', 'category', 'nb_phage_hallmark_genes')) %>%
+  filter(category %in% c(1,2,4,5)) %>%
+  add_contig_types() %>%
+  group_by(category, contig_type) %>%
+  summarise(count=n()) %>%
+  ungroup() %>%
+  spread(contig_type, count, fill=0) %>%
+  bind_rows(summarise_each(., 'sum'))
+
+virsorter_out[5, 'category']<-'Total'
+kable(virsorter_out, format='markdown')
+
+
+```
+
+
+
+In total, `r prettyNum(sum(virsorter_out[5, 2:8]), big.mark=',')` contigs were identified as viral.
+
+It's worth noticing that all of Polz sequences were not recognised by VirSorter as viral. It also means they would not have been included in the vContact2 analysis
+
+# Calculating abundance using FastViromeExplorer
+
+[FastViromeExplorer](http://fastviromeexplorer.readthedocs.io/en/latest/) is a tool that estimates abundance of contigs in a virome using k-mers, but importantly, is built upon a chassis of kallisto, that allows for more accurate recruitment to contigs that may share a degree of sequence similarity. 
+
+So that we can keep these in, I'm going to re-run the FastViromeExplorer analysis, but using the following:
+
+```
+all.sequences.fna
+minus any L4 viral sequences not recognised as Cat 1/2/4/5 viral by VirSorter
+plus RefSeq
+```
+This is treating our sequences more stringently than others, but I think that's ok.
+
+All input sequences to VirSorter were uploaded to
+
+```
+/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/all.sequences.input.to.VirSorter.fna.gz
+```
+
+All Category 1,2,4 and 5 contigs were concatenated into a single file and uploaded to 
+```
+/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/VirSorter.cat.1245.fna.gz
+```
+Now we remove all the pilon and NODE sequences from input, then add in those from the cat1234 file:
+
+```
+zcat all.sequences.input.to.VirSorter.fna.gz | \
+fastaToTab | \
+egrep -v "NODE|pilon" | \
+tabToFasta > tmp
+
+zcat VirSorter.cat.1245.fna | \
+fastaToTab | \
+egrep "NODE|pilon" | \
+tabToFasta > tmp2
+
+cat tmp tmp2 ~/work_dir/data/ref/refseq/refseq.viral.fna | gzip -c > selected.viral.genomes.for.FVE.fna.gz
+
+rm tmp tmp2
+
+
+```
+
+## Running FVE v 1.1 for the L4 10m read subset
+
+Now we have a chosen set of genomes, we can run FVE on it. First we need to create the `virus.list.txt` file, then create our kallisto index:
+
+```
+bash /users/PAS1117/osu8359/tools/FastViromeExplorer-1.1/utility-scripts/generateGenomeList.sh \
+selected.viral.genomes.for.FVE.fna selected.viral.genomes.for.FVE.virus.list.txt
+
+kallisto index -i kallisto-index.idx selected.viral.genomes.for.FVE.fna
+
+```
+
+Then we run a 10m subset against our genomes, using a cutoff of 0.4x coverage.
+
+```
+FWD=$WORK_DIR/VIR_L4_A1_Deep_fwd_val_1.fq.gz
+REV=$WORK_DIR/VIR_L4_A1_Deep_rev_val_2.fq.gz
+
+echo "subsampling $FWD" >> $LOGFILE
+
+seqtk sample -s 1111 $FWD 10000000 | gzip -c > fwd.fq.gz
+
+echo "subsampling $REV" >> $LOGFILE
+
+seqtk sample -s 1111 $REV 10000000 | gzip -c > rev.fq.gz
+
+kallisto index -i kallisto-index.idx $WORK_DIR/selected.viral.genomes.for.FVE.fna
+mv kallisto-index.idx $WORK_DIR
+
+java -cp $FVE/bin FastViromeExplorer -co 0.4 -1 fwd.fq.gz -2 rev.fq.gz -i $WORK_DIR/kallisto-index.idx -l $WORK_DIR/selected.viral.genomes.for.FVE.virus.list.txt -o L4
+
+echo "Zipping and moving files" >> $LOGFILE
+gzip L4/*.tsv
+
+mv L4/FastViromeExplorer-final-sorted-abundance.tsv.gz $WORK_DIR/fve/L4/L4.c0.4.fve.final.sorted.abundance.10m.reads.tsv.gz
+
+```
+
+## Running all of GOV subsets against this file
+
+First we create a template file `/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/fve/scripts/recruit.TEMPLATE.c0.4.sh` that contains:
+
+```
+#PBS -N recruit.TEMPLATE.c0.4
+#PBS -l walltime=12:00:00
+#PBS -l nodes=1:ppn=28
+#PBS -l mem=112GB
+#PBS -j oe
+#PBS -A PAS1117
+
+source activate local
+
+FVE=/users/PAS1117/osu8359/tools/FastViromeExplorer-1.1
+WORK_DIR=/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter
+READ_DIR=/fs/scratch/Sullivan_Lab/TARA_READS_4_READMAPPING
+
+SAMPLE=TEMPLATE
+
+
+LOGFILE=$WORK_DIR/fve/$SAMPLE.fve.log
+
+echo "Starting analysis" >> $LOGFILE
+
+cd $TMPDIR
+
+
+FWD=$READ_DIR/$SAMPLE
+FWD+=_R1.fastq.gz
+REV=$READ_DIR/$SAMPLE
+REV+=_R2.fastq.gz
+
+echo "subsampling $FWD" >> $LOGFILE
+
+seqtk sample -s 1111 $FWD 10000000 | gzip -c > fwd.fq.gz
+
+count=$(zcat fwd.fq.gz | grep -c '^+')
+echo "Checking fwd.fq.gz - it has $count reads" >> $LOGFILE
+
+
+echo "subsampling $REV" >> $LOGFILE
+
+seqtk sample -s 1111 $REV 10000000 | gzip -c > rev.fq.gz
+
+count=$(zcat rev.fq.gz | grep -c '^+')
+echo "Checking rev.fq.gz - it has $count reads" >> $LOGFILE
+
+
+#kallisto index -i kallisto-index.idx $WORK_DIR/selected.viral.genomes.for.FVE.fna
+#mv kallisto-index.idx $WORK_DIR
+
+
+mkdir $SAMPLE
+
+echo "Running:  java -cp $FVE/bin FastViromeExplorer -co 0.4 -1 fwd.fq.gz -2 rev.fq.gz -i $WORK_DIR/kallisto-index.idx -l $WORK_DIR/selected.viral.genomes.for.FVE.virus.list.txt -o $SAMPLE" >> $LOGFILE 
+
+java -cp $FVE/bin FastViromeExplorer -co 0.4 -1 fwd.fq.gz -2 rev.fq.gz -i $WORK_DIR/kallisto-index.idx -l $WORK_DIR/selected.viral.genomes.for.FVE.virus.list.txt -o $SAMPLE
+
+echo "Zipping and moving files" >> $LOGFILE
+gzip $SAMPLE/*.tsv
+
+mv $SAMPLE/FastViromeExplorer-final-sorted-abundance.tsv.gz $WORK_DIR/fve/$SAMPLE.c0.4.fve.final.sorted.abundance.10m.reads.tsv.gz
+
+```
+
+Then we run through `samples.txt` in the same directory to create a new job for each sample.
+
+```
+for i in `cat samples.txt`; do sed "s/TEMPLATE/$i/g" recruit.TEMPLATE.c0.4.sh > tmp; qsub tmp; done
+```
+
+Now we can import all the outputs into a dataframe
+
+```{r, message=FALSE}
+library(magrittr)
+library(data.table)
+LOCATION<-'../../data/L4.virome/abundance'
+files<-list.files(path=LOCATION, pattern='*.gz')
+samples<-str_replace(files, '.c0.4.fve.final.sorted.abundance.10m.reads.tsv.gz', '')
+samples<-data.frame(sample=samples, file=files)
+
+extract_sample_abundance<-function(x){
+  tmp<-read_tsv(paste(LOCATION, x['file'] ,sep='/')) %>%
+  dplyr::select(1,4) %>%
+  set_colnames(c('contig', 'estimated_abundance')) %>%
+  mutate(sample=x['sample'])
+}
+
+abundance_df<-rbindlist(apply(samples, 1, extract_sample_abundance))
+abundance_df$contig<-str_replace_all(abundance_df$contig, "-cat.*", "")
+
+```
+
+Add some metadata
+```{r}
+abundance_df<- abundance_df %>%
+  group_by(sample) %>% 
+  mutate(rank.per.sample = dense_rank(desc(estimated_abundance))) %>%
+  ungroup()
+
+# These are the ids for the Mizuno fosmids
+abundance_df <-abundance_df %>%
+  add_contig_types()
+
+```
+
+Now we can plot the content of the top 100 of each sample to see how well the L4 contigs are recruited across all samples. We also need to remove some of the samples as they are not included in the GOV contigs (even though the data is there) as they were not in the original roux paper.
+```{r}
+top_100_per_sample_df<-abundance_df %>%
+  filter(rank.per.sample<=100) %>%
+  group_by(sample, contig_type) %>%
+  summarise(count=n(), tot_abun=sum(estimated_abundance)) %>% 
+  ungroup() %>%
+  group_by(sample) %>% 
+  mutate(total_abundance_of_sample=sum(tot_abun)) %>% 
+  ungroup() %>%
+  mutate(perc_abundance=tot_abun/total_abundance_of_sample*100) 
+
+roux_top_100_per_sample_df <- select_only_roux_samples(top_100_per_sample_df)
+
+```
+
+#Plots
+
+Now we can plot relative abundances of each contig across samples. We want to order the bars by the most hits to L4 contigs.
+
+
+## Distribution of L4 contigs across GOV (barplot)
+```{r}
+#This calculates the total percentage abundance of a sample that is L4
+contig_type_abundance_top_100_df<-roux_top_100_per_sample_df %>% 
+  mutate(is_L4=ifelse(grepl('L4', contig_type), TRUE, FALSE)) %>% 
+  group_by(sample, is_L4) %>% 
+  mutate(perc_L4=sum(perc_abundance)) %>% 
+  ungroup() %>% 
+  mutate(comparator=ifelse(grepl('L4', contig_type), perc_L4, NA)) %>% 
+  mutate(bar_pos=dense_rank(desc(comparator)))
+contig_type_abundance_top_100_df$bar_pos[is.na(contig_type_abundance_top_100_df$bar_pos)]<-0
+
+contig_type_abundance_top_100_df<-contig_type_abundance_top_100_df %>% 
+  group_by(sample) %>% 
+  mutate(bar_pos=max(bar_pos)) %>% 
+  ungroup() %>% 
+  arrange(bar_pos)
+
+#Need to change SUR to SRF and MXL to MIX to map GOV metadata
+contig_type_abundance_top_100_df$sample<-gsub('SUR', 'SRF', contig_type_abundance_top_100_df$sample, perl=TRUE)
+contig_type_abundance_top_100_df$sample<-gsub('MXL', 'MIX', contig_type_abundance_top_100_df$sample, perl=TRUE)
+
+
+contig_type_abundance_top_100_df$sample<-factor(gsub('Station', '', contig_type_abundance_top_100_df$sample, perl=TRUE), levels=gsub('Station', '', unique(contig_type_abundance_top_100_df$sample), perl=TRUE))
+contig_type_abundance_top_100_df$contig_type<-factor(contig_type_abundance_top_100_df$contig_type, levels=rev(c('L4 hybrid', 'L4 short', 'L4 pilon', 'GOV', 'fosmid', 'RefSeq', 'vSAG', 'Luo 2017')))
+
+
+ggplot(contig_type_abundance_top_100_df, aes(x=sample, y=perc_abundance, fill=contig_type)) +
+  geom_bar(position = "fill",stat = "identity") +
+  labs(x='Sample', y='Percentage of competitively recruited short reads',
+      title='Representation of contigs in Tara Viromes (2009-2013)') + scale_fill_manual(values=get_contig_type_colors()) +
+  theme(axis.text.x = element_text(size=9, angle=90),
+        axis.title= element_text(size=16, face='bold'),
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0, size=18)) +
+  scale_y_continuous(labels = scales::percent, expand=c(0,0))
+```
+
+Now let's try and make a piechart version of this figure on a map
+## Map of TARA GOV samples
+```{r, message=FALSE}
+library(ggmap)
+gov_meta<-read_tsv('../../data/L4.virome/abundance/Metadata_GOV_2.0_All_Sites.txt')
+mp <- NULL
+mapWorld <- borders("world", colour="gray50", fill="gray50") # create a layer of borders
+mp <- ggplot() +   mapWorld
+
+mp + geom_point(data=gov_meta, aes(x=Longitude, y=Latitude, color=Ocean_and_sea_region)) + 
+  geom_text(data=gov_meta, check_overlap = TRUE,
+            aes(x=Longitude, y=Latitude, label=Station,
+                color=Ocean_and_sea_region), vjust = 0, nudge_y = 2, size=3) +
+  scale_color_npg() +
+  theme(axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        axis.line = element_blank(),legend.position="bottom", 
+        legend.text=element_text(size=6), legend.title=element_blank())
+```
+
+We're interested in getting the regions for each sample so we can put piecharts in:
+## Distribution of L4 contigs across GOV (pieplot)
+
+```{r, message=FALSE}
+map_contig_type_abundance_top_100_df <- contig_type_abundance_top_100_df %>%
+  left_join(gov_meta, by=c('sample'='Sample_label')) %>%
+  dplyr::select(c(1,2,3,6,8,15,17,19:45, 72))
+
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Latitude']<-50.25147
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Longitude']<- -4.21253
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4','Environmental_feature']<-'[SRF] surface water layer (ENVO:00010504), targeting a discrete depth at the top of the photic zone (ENVO:00000209)'
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4','Depth']<-5
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4','Marine_biome']<-'Coastal Biome'
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4','Ocean_and_sea_region']<-'[WEC] Western English Channel'
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4','Distance_from_coast']<-10
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Nitrite']<-0.27
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Nitrate_Nitrite']<-0.78
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Silicate']<-1.49
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Date_time']<-'2016-09-28T06:40'
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Phosphate']<-0.15
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Salinity']<-35.1508
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Temperature']<-16.2696
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'PAR_Photosynthetically_Active_Radiation']<-19.715
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Oxygen']<-229.66
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Fluorescence']<-1.82 #this is a holder value from the following day
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='L4', 'Chlorophyll_a']<-1.53 # this is from 0m
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='100_MES', 'Latitude']<- -12.9723
+map_contig_type_abundance_top_100_df[map_contig_type_abundance_top_100_df$sample=='100_MES', 'Longitude']<- -96.0122
+
+
+```
+
+
+```{r}
+library(scatterpie)
+
+d<-map_contig_type_abundance_top_100_df %>%
+  dplyr::select(1,2,4,6,7) %>%
+  spread(contig_type, perc_abundance)
+
+d[is.na(d)]<-0
+
+d<-d %>% mutate(sample_type=ifelse(grepl('SRF', sample), 'SRF',
+                                   ifelse(grepl('DCM', sample), 'DCM',
+                                          ifelse(grepl('MES', sample), 'MES',
+                                                 ifelse(grepl('MIX', sample), 'MIX', 
+                                                        ifelse(grepl('L4', sample), 'SRF', NA))))))
+
+SRF_df<-d %>% filter(sample_type=='SRF')
+DCM_df<-d %>% filter(sample_type=='DCM')
+MES_df<-d %>% filter(sample_type=='MES')
+
+to_plot<-SRF_df
+mp <- NULL
+mapWorld <- borders("world", colour="gray50", fill="gray50") # create a layer of borders
+mp <- ggplot(to_plot) +   mapWorld
+
+mp + geom_scatterpie(aes(x=Longitude, y=Latitude, group=sample, r=3),
+                    data=to_plot, cols=c('vSAG', 'RefSeq', 'fosmid', 'GOV', 'L4 pilon', 'L4 short', 'L4 hybrid', 'Luo 2017'), color=NA) +
+  scale_fill_manual(values = get_contig_type_colors()) +
+  ylim(-75, 60) +
+  xlim(-150, 80) +
+  theme(axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        axis.line = element_blank())
+```
+
+This makes it look like there is a correlation between a large number of L4 contigs being abundant and coastal regions.
+
+## Variable covariance plot
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+library(GGally)
+ env_params<-map_contig_type_abundance_top_100_df %>%
+  #filter(grepl('L4', contig_type)) %>%
+  dplyr::select(contig_type,perc_L4, Latitude, Longitude,Chlorophyll_a, Distance_from_coast, Temperature,Salinity, Nitrate_Nitrite) %>%
+  unique()
+  
+env_params[env_params=='NaN']<-NA
+
+
+ggpairs(env_params, aes(alpha=0.5, fill=contig_type))
+```
+
+There's no good correlation scores for any of the environmental parameters with either contig_type or perc_L4.
+
+Let's plot a Heatmap of samples to identify the most ubquitous viral genomes. We'll ignore any contigs that don't appear in the top 50 most abundant contigs for their sample, and any of these that appear in <10% of the samples. We also want to ignore any samples that weren't in the original Roux et al paper. We'll order the matrix columns by total abundance across all samples. Let's first look at surface samples:
+
+
+## Surface ubiquitous phages Heatmap
+
+```{r}
+library(ComplexHeatmap)
+plot_heatmap(sample_type='SUR')
+```
+
+The top 5 most abundant phages across the GOV dataset surface samples are: 
+
+1. H_NODE_1248
+2. NC_028955 (Prochlorococcus phage P-TIM68)
+3. NC_015279 (Synechococcus phage S-SM2)
+4. luo_2017_32
+5. H_NODE_269
+
+It is worth noting that S-SM2 is only in this list due to high abundance in the Red Sea and Indian Ocean samples. P-TIM68 is more ubiquitous, but largely limited to the subtropics as one would expect. Using VIPTree [@Nishimura2017-lp], H_NODE_1248 was most closely related to NC_028834 (Achromobacter phage 83-24) and (NC_001447), but they were pretty far away. However, the third CDS had a good hit to gene AP014259_4 of 'uvMED-GF-U-MedDCM-OCT-S28-C138', the  serine/threonine protein kinase of a putative pelagiphage, as well as 3 syntenic hits to 'uvMED-GF-C35-MedDCM-OCT-S36-C65', a putative pelagiphage in the C35 cluster. Thus, it is likely that this represents a novel pelagiphage-like (though we can't deduce that it's infecting SAR11) genome. In the short assembly, this hybrid assembly is broken into two pieces of 11.6k and 10.5k, respectively.
+
+H_NODE_269 is on a long branch by itself according to VIPtree, but its closest neighbours are vibriophages phiVC8, H3, J3 and H1. This contig is ubiquitous, but at relatively low concentrations except in samples 25_SUR, 122:125_SUR.
+
+
+```{r echo=FALSE, message=FALSE}
+library(knitr)
+kable(read_tsv('../../data/L4.virome/abundance/H_NODE_1248_viptree_prot_sim_search_to_nr.best.tsv') %>% 
+  dplyr::select(gene_id, hit.subject, `%.idt`, aln.len, bit.score) %>%
+  set_colnames(c('gene_id', 'hit_subject', 'pct_id', 'align_len', 'bit_score')) %>%
+  arrange(desc(pct_id), desc(bit_score)), format='markdown')
+```
+
+vSAG37.F6 was the 9th most abundant. Similarly,HTVC010P isn't anywhere in the plot, suggesting that initial predictions in Zhao et al that it was the most abundant phage on earth were due to a lack of similar representatives in the data. Thus, when other contigs are available, once assembled with pilon, the reads are split amongst the new contigs. The 6th most abundant is 'uvMED-GF-U-MedDCM-OCT-S41-C79', but this isn't a known pelagiphage (it belongs to an unclassified group).
+
+None of these are found at L4. Only 5 contigs from L4 are in this list - tig8616, tig8639, tig384,tig836, and tig646
+
+
+Now let's plot DCM samples
+
+## DCM ubiquitous phages Heatmap
+
+```{r}
+plot_heatmap('DCM')
+```
+
+H_NODE_1248 is also the 4th most abundant in the DCM samples.
+
+Now let's plot mesopelagic samples
+## Mesopelagic ubiquitous phages Heatmap
+
+```{r}
+plot_heatmap('MES')
+```
+
+H_NODE_1248 is 8th in the mesopelagic samples, but mainly due to high prevalence in one sample (72_MES)
+
+
+## Most abundant phages at L4
+
+Let's plot the 50 most abundant phages at L4
+
+```{r, message=FALSE}
+L4_df<-abundance_df %>% filter(sample=='L4') %>% 
+  top_n(50, estimated_abundance) %>%
+  arrange(desc(estimated_abundance)) %>%
+  mutate(contig=gsub('VIRSorter_', '', contig, perl=TRUE)) %>%
+  mutate(contig=gsub('_cov.*', '', contig, perl=TRUE)) %>%
+  mutate(contig=gsub('_gene_.*', '', contig, perl=TRUE))
+
+L4_df$contig_type<-factor(L4_df$contig_type, levels=rev(c('L4 hybrid', 'L4 short', 'L4 pilon', 'GOV', 'fosmid', 'RefSeq', 'vSAG', 'Luo 2017')))
+L4_df$contig<-factor(L4_df$contig, levels=rev(L4_df$contig))
+
+ggplot(L4_df, aes(x=contig, y=estimated_abundance, fill=contig_type)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(x='Contig', y='Estimated Abundance',
+      title='Top 50 most abundant viral contigs in L4 sample') + scale_fill_manual(values=get_contig_type_colors()) +
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=10),
+        axis.title= element_text(size=16, face='bold'),
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0, size=18))
+```
+
+
+# Correlation of abundant phages with environmental parameters
+
+Here, we remove all parameters that have a high correlation with Nitrate_Nitrite (namely, nitrite, phosphate, fluorescence), and then we plot the NMDS for the samples, based on the top 100 taxa in each and looking at those that appear in at least 5% of samples.
+
+```{r, message=FALSE}
+library(vegan)
+abundance_mtx<-sqrt(sqrt(get_abundance_matrix(sample_type='SUR', rank_per_sample=100, min_pct_samples=5)))
+metadata<-map_contig_type_abundance_top_100_df %>%
+  mutate(sample=gsub('SRF', 'SUR', sample, perl=TRUE)) %>%
+  filter(sample %in% rownames(abundance_mtx)) %>%
+  dplyr::select(c(1, 6:11, 13, 20:23, 26, 35)) %>%
+  unique()
+
+abun_mds<-metaMDS(abundance_mtx, autotransform = FALSE)
+data.scores <- as.data.frame(scores(abun_mds))
+data.scores$sample <- rownames(data.scores)
+data.scores<-data.scores %>%
+  left_join(metadata)
+
+#plot(abun_mds, type='t', display='sites')
+ggplot(data.scores, aes(x=NMDS1, y=NMDS2, color=Ocean_and_sea_region)) +
+  geom_text(aes(label=sample), alpha=0.8, size=3) +
+  theme(legend.position = 'right', 
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(), 
+        legend.text = element_text(size=6),
+        legend.title = element_blank()) +
+  scale_color_npg()
+```
+
+So, L4 is separated from the GOV samples and most similar to that of the Horn of Africa and those from the Southern Ocean.
+
+```{r}
+stressplot(abun_mds)
+```
+
+Stress plot looks good.
+
+```{r}
+chem<-metadata %>%
+  dplyr::select(1,2,3, 8:14) %>% as.data.frame()
+rownames(chem)<-chem$sample
+chem<-chem %>% dplyr::select(-sample)
+
+ef<-envfit(abun_mds, chem, permu=999, na.rm=TRUE)
+ef
+```
+
+So, none of the captured environmental parameters explain the distribution of the viral taxa, within significance. We can check this with PERMANOVA 
+
+
+```{r}
+chem2<-chem %>% na.omit()
+abundance_mtx2<-abundance_mtx %>%
+  as.data.frame() %>% 
+  mutate(sample=rownames(abundance_mtx)) %>%
+  filter(sample %in% rownames(chem2))
+rownames(abundance_mtx2)<-abundance_mtx2$sample
+abundance_mtx2<-abundance_mtx2 %>% dplyr::select(-sample)
+abundance_mtx2<-abundance_mtx2[rownames(chem2), ]
+
+dist_mtx2<-vegdist(abundance_mtx2)
+adonis(dist_mtx2~Chlorophyll_a+Salinity+Latitude+Longitude+Nitrate_Nitrite+Oxygen, data=chem2)
+
+```
+
+While most of these terms are significant, none have a large effect, so I'd be tempted to ignore them as the model they are testing against is that the environmental parameters have NO effect. There is possibly some evidence of nutrient concentration driving the differences as both Chlorophyll_a and Nitrite_Nitrate account for 25% of the variance
+

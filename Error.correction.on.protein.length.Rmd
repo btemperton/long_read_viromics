@@ -1,0 +1,102 @@
+---
+title: "Impact of error correction on protein lengths"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+Here we show the impact of error correction on long reads at the following stages:
+
+1. Raw reads (data/L4/A1/L4.A1.2D.pass.reads.fa.gz)
+2. Canu contigs (data/L4/A1/canu/L4_A1.canu.contigs.fa.gz)
+3. Pilon corrected contigs (data/L4/A1/canu/pilon/L4_A1.canu.contigs.pilon.corrected.fa)
+4. L4 short
+5. L4 hybrid
+6. L4 pilon
+7. GOV
+8. vSAG
+9. RefSeq Caudovirales
+
+Each of these was filtered down to 10k reads, then run through MGA
+
+```
+zcat L4.A1.2D.pass.reads.fa.gz | fastaToTab | awk -F '\t' '{if(length($2)>=10000) print $0}' | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/raw.pass.reads\t/g' > raw.reads.start.stop
+
+zcat L4_A1.canu.contigs.fa.gz | fastaToTab | awk -F '\t' '{if(length($2)>=10000) print $0}' | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/canu.contigs\t/g' > canu.contigs.start.stop
+
+cat L4_A1.canu.contigs.pilon.corrected.fa | fastaToTab | awk -F '\t' '{if(length($2)>=10000) print $0}' | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/pilon.corrected\t/g' > pilon.corrected.start.stop
+
+cd /users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter
+
+zcat VirSorter.cat.1245.fna.gz | fastaToTab | grep S_NODE | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/L4.short\t/g' > L4.short.start.stop
+
+zcat VirSorter.cat.1245.fna.gz | fastaToTab | grep H_NODE | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/L4.hybrid\t/g' > L4.hybrid.start.stop
+
+zcat VirSorter.cat.1245.fna.gz | fastaToTab | grep pilon | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/L4.pilon\t/g' > L4.pilon.start.stop
+
+zcat VirSorter.cat.1245.fna.gz | fastaToTab | egrep "GOV|Tp1|Mp1" | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/GOV\t/g' > GOV.start.stop
+
+zcat VirSorter.cat.1245.fna.gz | fastaToTab | grep vSAG | tabToFasta > tmp.fa
+~/tools/mga_linux_ia64 -m tmp.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/vSAG\t/g' > vSAG.start.stop
+
+```
+
+For RefSeq Caudovirales, 2006 nucleotide genomes were downloaded from here:
+https://www.ncbi.nlm.nih.gov/genomes/GenomesGroup.cgi?taxid=28883&host=bacteria
+
+Using the following criteria:
+Caudovirales[Organism] AND srcdb_refseq[PROP] NOT wgs[PROP] NOT cellular organisms[ORGN] NOT AC_000001:AC_999999[PACC] AND ("vhost bacteria"[Filter]) 
+
+```
+~/tools/mga_linux_ia64 -m caudovirales.fa | grep -v '^#' | cut -f 2,3 | sed 's/^/Refseq.caudovirales\t/g' > refseq.caudovirales.start.stop
+```
+
+
+```{bash}
+rsync -avzh osu8359@sftp.osc.edu:/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/*.start.stop ../../data/L4.virome/error_correction
+rsync -avzh osu8359@sftp.osc.edu:/users/PAS1117/osu8359/work_dir/data/L4/A1/*.start.stop ../../data/L4.virome/error_correction
+rsync -avzh osu8359@sftp.osc.edu:/users/PAS1117/osu8359/work_dir/data/L4/A1/canu/*.start.stop ../../data/L4.virome/error_correction
+rsync -avzh osu8359@sftp.osc.edu:/users/PAS1117/osu8359/work_dir/data/ref/refseq/refseq.caudovirales.start.stop ../../data/L4.virome/error_correction
+
+cat ../../data/L4.virome/error_correction/*.start.stop > ../../data/L4.virome/error_correction/complete.start.stop.tsv
+```
+
+Now let's assemble!
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(ggsci)
+
+lengths_df <- read_tsv('../../data/L4.virome/error_correction/complete.start.stop.tsv', col_names=FALSE) %>% 
+  set_colnames(c('type', 'start', 'stop')) %>%
+  mutate(length=(stop-start)/3) %>%
+  mutate(tech=ifelse(type %in% c('L4_pilon', 'canu corrected long reads', 'raw long reads'), 'long_read',
+                     ifelse(type %in% c('GOV', 'L4_hybrid', 'L4_short'), 'DBG', 
+                            ifelse(type=='vSAG', 'Single Viral Genome', 'RefSeq')))) %>%
+  mutate(type=as.factor(type)) %>%
+  filter(length<400) %>%
+  filter(type !='Pilon corrected long reads')
+
+
+ggplot(lengths_df, aes(y=length, x=reorder(type, length, FUN=median), fill=type)) + geom_boxplot(outlier.shape=NA) +
+  coord_flip() +
+  labs(y='Protein lengths (aa)', x='Type', caption='Proteins > 400 aa have been removed') +
+  theme(legend.position = "none",
+        axis.title.y = element_blank(), 
+        axis.title.x = element_text(size=16, face='bold'),
+        axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=16)) + scale_fill_npg()
+```

@@ -1,0 +1,285 @@
+---
+title: "VContact2 analysis of VirSorter Contigs"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+library(ggsci)
+source('../useful.functions.R')
+```
+
+# Selection of Phages for Study
+
+We need to add the following:
+
+1. 370 contigs > 10k were extracted from Luo et al (from here; https://www.imicrobe.us/#/publications/138) and put through VirSorter
+2. uvMed (836 over 10k)
+3. uvDeep (99 over 10k)
+4. vSAGs (39 over 10k)
+5. Autolykoviridae from Polz et al 2017 (16 over 10k)
+6. L4_hybrid (3123 over 10k)
+7. L4_canu (600 over 10k)
+8. GOV (16929 over 10k)
+
+These were all appended to each other and re-run through VirSorter 1.03 on Cyverse so that they were all gene called the same way, with appropriate phage cluster names.
+
+# VirSorter results
+
+The location of these files is:
+
+`/iplant/home/btemperton/all_vcontact`
+
+The key files have been copied to:
+
+`Warwick_Dugdale_PhD/data/L4.virome/full.virsorter/`
+
+Once passed through VirSorter we had the following breakdown:
+
+Category | Luo | uvMed | uvDeep | vSAGs | Polz | L4_hybrid | L4_canu | GOV
+---------|-----|-------|--------|-------|------|-----------|---------|-----
+1 | 112 | 448 | 14 | 3 | 0 | 371 | 56 | 2035
+2 | 214 | 383 | 52 | 34 | 0 | 1888 | 305 | 11902
+4 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 3
+5 | 0 | 0 | 7 | 0 | 0 | 19 | 5 | 39
+Total | 336 | 831 | 73 | 37 | 0 | 2279 | 366 | 13979
+
+In total, 17901 contigs were identified as viral.
+
+It's worth noticing that all of Polz sequences were not recognised by VirSorter as viral. It also means they would not have been included in the vContact2 analysis
+
+## Loading VContact cluster data
+
+The files for VContact2 can be found in `Warwick_Dugdale_PhD/data/L4.virome/vcontact2`. We can load them in and assign contig types to each and clean up the contig names.
+
+```{r, message=FALSE}
+library(tidyverse)
+library(magrittr)
+vcontact.proteins<-read_csv('../../data/L4.virome/vcontact2/vConTACT_proteins.csv.gz')
+
+sequence_lengths<-read_csv('../../data/L4.virome/full.virsorter/input.sequence.lengths.csv.gz') %>%
+  mutate(contig=gsub("\\.", "_", contig))
+
+clusters<-read_csv('../../data/L4.virome/vcontact2/c1.clusters.for.r.csv.gz') %>%
+  add_contig_types() %>%
+  mutate(contig_type=gsub(" ", "_", contig_type)) %>%
+  mutate(contig=gsub("VIRSorter_", "", contig)) %>%
+  mutate(contig=gsub("-circular", "", contig)) %>%
+  mutate(contig=gsub("_c_.*", "", contig)) %>% 
+  left_join(sequence_lengths, by='contig')
+
+```
+
+# Composition of clusters
+
+Let's evaluate the composition of the clusters. Specifically, we are interested in whether there are any pilon-specific clusters, mostly-pilon clusters, and L4-only clusters.
+
+```{r, message=FALSE}
+library(qvalue)
+
+filter_clusters<-clusters %>%
+  select(cluster_id, p_value) %>% distinct()
+filter_clusters$q_value<-qvalue(filter_clusters$p_value)[['qvalues']]
+filter_clusters<- filter_clusters %>% filter(q_value <0.05)
+
+contig_type_counts <- clusters %>% 
+  filter(cluster_id %in% filter_clusters$cluster_id) %>%
+  mutate(is_L4=ifelse(grepl('L4', contig_type), TRUE, FALSE)) %>%
+  group_by(cluster_id) %>%
+  mutate(L4_count=sum(is_L4)) %>%
+  ungroup() %>%
+  group_by(cluster_id, contig_type, cluster_size, p_value, L4_count) %>%
+  summarise(type_count=n()) %>%
+  ungroup() %>%
+  spread(contig_type, type_count, fill=0)
+
+pilon_only_clusters <- contig_type_counts %>% filter(L4_pilon/cluster_size==1)
+mostly_pilon_clusters <- contig_type_counts %>% filter(L4_pilon/cluster_size>0.5)
+L4_only_clusters<-contig_type_counts %>% filter(L4_count/cluster_size==1)
+mostly_L4 <- contig_type_counts %>% filter(L4_count/cluster_size>0.5)
+```
+
+Out of a total of `r length(unique(clusters$cluster_id))` clusters, `r nrow(pilon_only_clusters)` clusters consist of only two pilon-only contigs, whereas 13 clusters consist of *mostly* pilon contigs. 136 cluster comprised only L4 contigs, whereas 195 clusters comprised mostly L4 contigs.
+
+When we use a p-value and q-value cutoffs of 0.05 the numbers are as follows:
+
+Cluster Type | no pvalue cutoff | p< 0.05 | q <0.05
+-------------|------------------|---------|---------
+Total number of clusters | `r nrow(contig_type_counts)` | `r nrow(contig_type_counts)` | `r nrow(contig_type_counts)`
+PILON-only clusters | `r nrow(pilon_only_clusters)` | `r nrow(pilon_only_clusters)` | `r nrow(pilon_only_clusters)`
+Mostly PILON members | `r nrow(mostly_pilon_clusters)` | `r nrow(mostly_pilon_clusters)` | `r nrow(mostly_pilon_clusters)`
+L4-only clusters | `r nrow(L4_only_clusters)` | `r nrow(L4_only_clusters)` | `r nrow(L4_only_clusters)`
+Mostly L4 members | `r nrow(mostly_L4)` | `r nrow(mostly_L4)` | `r nrow(mostly_L4)` 
+
+The P-value from ClusterONE is the result of a one-sided Mann-Whitney U-test between the in-weights and the out-weights of the vertices of a cluster. Thus, a 'true' cluster would be one where the in-weights are significantly higher than the out-weights. It is therefore probably sensible to investigate only those clusters that have a p-value < 0.05. We also need to account for multiple testing, so we will investigate those clusters with q-values of <0.05.
+
+With this cutoff, just under 1% of the `r nrow(contig_type_counts %>% filter(q_value<0.05))` clusters contain members that are unique to the L4 metagenome:
+
+```{r, message=FALSE, echo=FALSE}
+library(knitr)
+kable(L4_only_clusters %>% filter(q_value<0.05) %>%
+        select(cluster_id, cluster_size, L4_hybrid, L4_pilon, L4_short), format='markdown')
+```
+
+This compares to `r nrow(contig_type_counts %>% filter(q_value<0.05) %>% filter(GOV/cluster_size==1))` out of `r nrow(contig_type_counts %>% filter(q_value<0.05))` clusters that are unique to the GOV datasets.
+
+```{r, echo=FALSE, message=FALSE}
+
+gov_only_clusters<-contig_type_counts %>% filter(q_value<0.05) %>% filter(GOV/cluster_size==1)
+gov_plus_L4_only_clusters<-contig_type_counts %>% filter(q_value<0.05) %>% filter((GOV + L4_count)/cluster_size==1)
+L4_enriched_GOV<- nrow(gov_plus_L4_only_clusters) - nrow(gov_only_clusters)
+
+```
+
+Addition of L4 contigs has enriched membership of `r L4_enriched_GOV` clusters that previously comprised of only GOV members.
+
+# Length of hybrid and pilon representatives
+If our analyses are correct, the the hybrid and pilon representatives should be extensions of contigs in other clusters representing things like the pelagiphages. Here, we test to see if that's true. First we can plot the length distributions of the contigs across all clusters:
+
+```{r}
+library(ggridges)
+
+clusters %>% 
+  select(contig, contig_type, length) %>% 
+  unique() %>%
+  filter(contig_type %in% c('GOV', 'L4_hybrid', 'L4_pilon', 'L4_short')) %>%
+  mutate(contig_type=as.factor(contig_type)) %>%
+  ggplot(aes(y=contig_type)) +
+  geom_density_ridges(aes(x=length, fill=contig_type), alpha=0.8, color='white') +
+  labs(x='Contig length (bp)',
+       y='Contig Type') +
+  theme_ridges(center=TRUE) +
+  scale_y_discrete(expand = c(.01, 0)) +
+  xlim(5000, 50000) + scale_fill_npg()
+
+```
+ Ok, so there doesn't appear to be an overall trend of different contig lengths between the different contig types. 
+
+
+# Investigating the clustering of pilon reads
+It is possible that due to read error, the pilon reads incorporated into clusters are more weakly connected to their neighbours than the short read contigs (possibly due to missing proteins). Here, we will test this as follows:
+
+1. Identify all clusters that:
+  + Have a q-value < 0.05
+  + contain at least 10 members
+  + contain at least 1 pilon member
+2. Filter out any edges to non-cluster members
+3. Classify the remaining edges by the contig type of target and source nodes
+4. Plot the distribution of weights for each category.
+
+```{r, message=FALSE}
+contigs_to_include<-clusters %>%
+  filter(cluster_size >=10) %>%
+  select(-length) %>%
+  group_by(cluster_id, cluster_size, p_value, contig_type) %>%
+  summarise(type_count=n()) %>%
+  ungroup() %>%
+  spread(contig_type, type_count, fill=0)
+
+contigs_to_include$q_value<-qvalue(contigs_to_include$p_value)[['qvalues']]
+
+contigs_to_include <- contigs_to_include %>% 
+  filter(q_value<0.05) %>%
+  filter(L4_pilon > 0)
+```
+
+That leaves us `r nrow(contigs_to_include)` clusters ranging in size from `r range(contigs_to_include$cluster_size)[1]` to `r range(contigs_to_include$cluster_size)[2]` members.
+
+Now let's identify the members that are in these clusters. To simplify, let's stick to RefSeq, GOV and L4 contigs
+
+```{r, message=FALSE}
+cluster_subset<- clusters %>% 
+  filter(cluster_id %in% contigs_to_include$cluster_id) %>%
+  select(contig, cluster_id, contig_type) %>%
+  filter(contig_type %in% c('GOV', 'RefSeq', 'L4_hybrid', 'L4_short', 'L4_pilon'))
+```
+
+Now we need to load the edge weights:
+
+```{r, message=FALSE}
+library(magrittr)
+edges<-read_delim('../../data/L4.virome/vcontact2/c1.ntw.gz', delim=' ', col_names=FALSE ) %>%
+  set_colnames(c('source', 'target', 'weight')) %>%
+  mutate(source=gsub("VIRSorter_", "", source)) %>%
+  mutate(source=gsub("-circular", "", source)) %>%
+  mutate(source=gsub("_c_.*", "", source)) %>%
+  mutate(target=gsub("VIRSorter_", "", target)) %>%
+  mutate(target=gsub("-circular", "", target)) %>%
+  mutate(target=gsub("_c_.*", "", target))
+
+edges <- edges %>%
+  filter(source %in% cluster_subset$contig | target %in% cluster_subset$contig)
+
+```
+
+Now let's find the intra-cluster weights. We need to make sure that they are non-directional (e.g. GOV_L4_hybrid and L4_hybrid_GOV are included together)
+```{r}
+edge_map<- edges %>%
+  inner_join(cluster_subset, by=c('source'='contig')) %>%
+  rename(source_cluster_id=cluster_id, source_contig_type=contig_type) %>%
+  inner_join(cluster_subset, by=c('target'='contig')) %>%
+  rename(target_cluster_id=cluster_id, target_contig_type=contig_type) %>%
+  mutate(edge_type=ifelse(source_cluster_id==target_cluster_id, 'inner', 'outer')) %>%
+  filter(edge_type=='inner') %>%
+  mutate(edge_classification=as.factor(ifelse(source_contig_type < target_contig_type,
+                                              paste(source_contig_type, target_contig_type, sep='_'),
+                                              paste(target_contig_type, source_contig_type, sep='_'))))
+
+
+ggplot(edge_map %>% filter(edge_classification %in% c('GOV_GOV', 'GOV_L4_pilon', 'GOV_L4_short', 'GOV_L4_hybrid', 'GOV_RefSeq')), aes(y=edge_classification, x=weight, fill=edge_classification)) + 
+  geom_density_ridges(alpha=0.8, color='white') +
+  scale_x_log10() + 
+  labs(x='Edge Weight',
+       y='Interaction Type') +
+  theme_ridges(center=TRUE) +
+  scale_y_discrete(expand = c(.01, 0)) +
+  scale_fill_npg()
+  
+```
+
+So, if you look at all the data together, there doesnt' appear to be any significant decreasing in weight for GOV-pilon interactions. Let's look at these on a per-cluster basis. Here, we run a Mann-Whitney test on each of the clusters to compare the distribution of GOV-GOV edges to GOV-pilon edges. We are specifically testing the hypothesis that the GOV-GOV edges will have a higher weight than the GOV-pilon edges. Because the numbers of edges are so large, the p-values can be taken with a pinch of salt for *meaningful* differences. Thus, a 95% confidence level and estimate of the differences, which is the median of the difference of a randomly chosen weight from a GOV-GOV edge, and a randomly chosen weight from a GOV-pilon edge. Because of the multiple testing, we also calculate a q-value from the p-values. (Note, this is a super-handy example of how to apply variance analysis across groups using dplyr. Thanks to [Sebastian Sauer](https://sebastiansauer.github.io/multiple-t-tests-with-dplyr/) for the example!
+
+```{r, message=FALSE, warning=FALSE}
+per_cluster <- edge_map %>%
+  filter(edge_classification %in% 
+           c('GOV_GOV', 'GOV_L4_pilon', 'GOV_L4_short', 'GOV_L4_hybrid', 'GOV_RefSeq')) %>%
+  select(source_cluster_id, edge_classification, weight) %>%
+  group_by(source_cluster_id, edge_classification) %>%
+  summarise(value=list(weight)) %>%
+  spread(edge_classification, value) %>%
+  ungroup() %>%
+  group_by(source_cluster_id) %>%
+  mutate(p_value=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$p.value,
+         conf.level=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$conf.int[1],
+         estimate=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$estimate,
+         gov_gov_size=length(unlist(GOV_GOV)),
+         gov_pilon_size=length(unlist(GOV_L4_pilon)),
+         gov_gov_median=median(unlist(GOV_GOV)),
+         gov_pilon_median=median(unlist(GOV_L4_pilon))) %>%
+  select(source_cluster_id, gov_gov_size, gov_pilon_size, gov_gov_median, gov_pilon_median, p_value, conf.level, estimate)
+
+per_cluster$q_value<-qvalue(per_cluster$p_value)[['qvalues']]
+  
+```
+
+Out of 210 clusters, 69 of them have a significant q-value. Within these, the median 95% confidence level was 2.11. That is to say, that where there was a significant difference, the difference in weights between GOV-GOV and GOV-pilon members of a cluster was small for most clusters, with several showing larger differences. It is worth remembering that edge weight is scored from 1 to 300, and the maximum significant median difference between GOV-GOV and GOV-pilon edges is 14.09. Therefore, we can say that there is some evidence to suggest that error-rate on pilon reads may be affecting protein calling, and therefore reducing edge-weights within clusters, but the effect is small.
+
+```{r, message=FALSE, warning=FALSE}
+filtered_per_cluster <- per_cluster %>% filter(q_value < 0.05)
+ggplot(filtered_per_cluster, aes(x=conf.level)) + geom_density(fill='grey', color='white') +
+  xlab('95% confidence interval of median difference between edge weights')
+```
+
+## Which are the worst offenders?
+Is it to do with coverage? Are they lower abundance contigs?
+
