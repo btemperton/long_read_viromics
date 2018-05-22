@@ -1,0 +1,145 @@
+---
+title: "Evaluating Microdiversity in L4 data"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+#Introduction
+
+Contigs from our study were run through Ann's metapop software (REF) that calculates $\pi$ and $\theta$ values. $\pi$ is a measure of nucleotide diversity and is defined as the average number of nucleotide differences per site between two DNA sequences in all possible pairs in the sample population [@Nei1979-wf]:
+
+$$
+\pi=\sum_{ij}x_ix_j\pi_{ij} = 2 \times \sum_{i=2}^{n} \sum_{j=1}^{i-1}x_ix_j\pi_{ij}
+$$
+where $x_i$ and $x_j$ are the respective frequencies of the $ith$ and $jth$ sequences, and $\pi_{ij}$ is the number of nucleotide differences per nucleotide site between the $ith$ and $jth$ sequences, and $n$ is the number of sequences in the sample.
+
+$\theta$ is a measure of nucleotide polymorphism expected under a specific model of mutation that assumes each new mutation occurs at a site that hasn't previously mutated. 
+
+It assumes that equilibrium has been achieved by a population between genetic drift and mutation.
+
+#Evaluating the distributions of $\pi$ and $\theta$ for Hybrid, Short and Pilon contigs
+
+The hypothesis we are testing is that the PILON reads represented a resolution of the microdiversity problem that was causing assembly failure in microdiverse taxa such as Pelagiphage HTVC010P. If this is the case, we should see greater values of $\pi$ in PILON contigs compared to those from other contigs.
+
+We know from alignments that the contig VIRSorter_tig00000404_pilon is very similar to HTVC010P, so we have highlighted where it sits in the distributions.
+
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#Let's first do the necessary data-wrangling that is needed:
+
+library(tidyverse)
+library(cowplot)
+library(magrittr)
+library(data.table)
+source('../useful.functions.R')
+files<-list.files('../../data/L4.virome/microdiversity/metapop', pattern='.*tsv', full.names = TRUE)
+samples<-str_replace(files, '.*metapop/(\\w+).contigs_filtered_whole_genome_biostats.tsv', '\\1')
+samples<-data.frame(sample=samples, file=files)
+
+
+load_data<-function(x){
+  tmp<-read_tsv(x['file']) %>%
+    select(contig, pi, theta) %>%
+    mutate(sample=x['sample']) %>%
+    add_contig_types()
+
+  tmp$contig<-str_replace_all(tmp$contig, "-cat.*", "")
+  tmp$contig_type<-str_replace_all(tmp$contig_type, c('L4 pilon'='OLC', 'L4 short'='DBG', 'L4 hybrid'='DBG'))
+  tmp$pi<-as.numeric(tmp$pi)
+  
+  
+  tmp$contig_type=factor(tmp$contig_type, levels=c('OLC', 'DBG'))
+  tmp<- tmp %>% na.omit() %>%
+    filter(pi != 0)
+  return(tmp)
+}
+
+df<-rbindlist(apply(samples, 1, load_data))
+
+summary_df <- df %>% 
+  group_by(sample, contig_type) %>%
+  summarise(med_pi=median(pi), med_theta=median(theta))
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(ggridges)
+library(ggsci)
+ggplot(df %>% filter(sample=='L4'),
+       aes(x=pi, y=contig_type, fill=contig_type)) +
+  geom_density_ridges(alpha=0.7, jittered_points=TRUE,
+                      position=position_raincloud(adjust_vlines=TRUE),
+                      point_size=0.5, quantile_lines = TRUE, scale=0.9,
+                      vline_size = 1, vline_color='red') +
+  labs(x=expression(pi),
+       y='Contig Type',
+       title=expression(paste('Nucleotide diversity (', 
+                   pi, 
+                   ') of contigs', sep='')),
+       caption='dashed red line denotes location of HTVC010P-like contig') +
+  theme_ridges() + 
+  theme(legend.position='none', 
+        axis.title = element_text(size=16),
+        plot.title = element_text(size=16)) +
+  scale_fill_npg() +
+  scale_x_log10() +
+  geom_vline(xintercept=2.018723e-03, color='red', linetype='dashed')
+```
+
+So, in the L4 sample, there appears to be a higher value of $\pi$ in the OLC assemblies than the DBG assemblies. We can test our specific hypothesis with a two-sided Mann Whitney test:
+
+```{r}
+tmp<- df %>% filter(sample=='L4')
+wilcox.test(tmp[tmp$contig_type=='OLC', 'pi'],
+            tmp[tmp$contig_type=='DBG', 'pi'], conf.int = TRUE)
+```
+
+Does it hold for $\theta$?
+
+```{r, echo=FALSE}
+ggplot(df,
+       aes(x=theta, y=contig_type, fill=contig_type)) +
+  geom_density_ridges(alpha=0.7, jittered_points=TRUE,
+                      position=position_raincloud(adjust_vlines=TRUE),
+                      point_size=0.5, quantile_lines = TRUE, scale=0.9,
+                      vline_size = 1, vline_color='red') +
+  labs(x=expression(theta),
+       y='Contig Type',
+       title=expression(paste('Nucleotide diversity (', 
+                   theta, 
+                   ') of contigs from all samples', sep='')))  +
+  theme_ridges() + 
+  theme(legend.position='none', 
+        axis.title = element_text(size=16),
+        plot.title = element_text(size=16)) +
+  scale_fill_npg() +
+  scale_x_log10()
+```
+
+```{r}
+tmp<- df %>% filter(sample=='L4')
+wilcox.test(tmp[tmp$contig_type=='OLC', 'theta'],
+            tmp[tmp$contig_type=='DBG', 'theta'], conf.int = TRUE)
+```
+
+
+Ratios between $\pi$ and $\theta$ are similar for both DBG and OLC assembled sequences:
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(df %>% filter(sample=='L4'), 
+       aes(x=pi, y=theta, color=contig_type)) + 
+  geom_point(alpha=0.3) +
+  geom_smooth(method='lm',formula=y~x) +
+  labs(x=expression(pi),
+       y=expression(theta)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_npg()
+```
+
+
+
+#References
