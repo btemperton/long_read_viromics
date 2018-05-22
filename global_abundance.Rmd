@@ -16,7 +16,6 @@ library(ComplexHeatmap)
 library(circlize)
 library(cowplot)
 library(ggsci)
-source('../useful.functions.R')
 source('useful.functions.R')
 ```
 

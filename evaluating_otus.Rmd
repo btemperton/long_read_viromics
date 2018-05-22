@@ -1,0 +1,28 @@
+---
+title: "Evaluating impact of long reads on phage OTUs"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+## Evaluating the impact of long reads on phage OTUs
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+library(ggsci)
+source('useful.functions.R')
+```
+
+From the VContact2 data, it looks like the long reads are not uncovering a vast diversity of new phages at the VC level. However, the abundance data suggests that the long reads are in fact highly abundant members of their clusters. One possibility is that they are adding diversity at the phage OTU level. To test this, we are going to resolve all the sequence data we used for the abundance plots into phage OTUs using Simon's clustering script:
+
+```
+
+```

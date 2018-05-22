@@ -26,8 +26,6 @@ vignettes/*.pdf
 # Shiny token, see https://shiny.rstudio.com/articles/shinyapps.html
 rsconnect/
 .Rproj.user
-<<<<<<< HEAD
+
 # output from R markdowns
-*.html*.html
-=======
->>>>>>> 9c2b4117f98bda49a129a1289da524d805401e71
+*.html
