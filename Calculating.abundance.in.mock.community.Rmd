@@ -1,0 +1,44 @@
+---
+title: "Calculating abundance in mock community"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+```
+#PBS -N compare_abundances
+#PBS -l walltime=48:00:00
+#PBS -l nodes=1:ppn=27
+#PBS -j oe
+#PBS -m ae
+#PBS -A PAS1117
+
+source activate local
+cd /users/PAS1117/osu8359/work_dir/data/mock_community/genomes
+cat CBA_18_1.fa CBA_38_1.fa CBA_38_2.fa PSA_HM1.fa PSA_HP1.fa PSA_HS2.fa > $TMPDIR/combined.fa
+
+cd $TMPDIR
+bowtie2-build combined.fa combined
+bowtie2 -x combined --threads 27 -1 /users/PAS1117/osu8359/work_dir/data/mock_community/illumina/mock.A.mini.fwd.pe.hq.fq.gz -2 /users/PAS1117/osu8359/work_dir/data/mock_community/illumina/mock.A.mini.rev.pe.hq.fq.gz | samtools view -F 4 -buS | samtools sort -o short.reads.vs.mock.genomes.mapped.bt2.sorted.bam
+
+samtools index short.reads.vs.mock.genomes.mapped.bt2.sorted.bam
+
+mv short.reads.vs.mock.genomes.mapped.bt2.sorted.bam* /users/PAS1117/osu8359/work_dir/data/mock_community
+
+minimap2 \
+-x map-ont \
+-a \
+-t 27 \
+combined.fa \
+/users/PAS1117/osu8359/work_dir/data/mock_community/2D/mock_A_pass.2d.fastq |\
+samtools view -F 4 -buS | samtools sort -o long.reads.vs.mock.genomes.mapped.minimap2.sorted.bam
+
+samtools index long.reads.vs.mock.genomes.mapped.minimap2.sorted.bam
+
+mv long.reads.vs.mock.genomes.mapped.minimap2.sorted.bam* /users/PAS1117/osu8359/work_dir/data/mock_community
+
+```

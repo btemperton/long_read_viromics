@@ -1,0 +1,183 @@
+---
+title: "Calculating impact of hybrid assembly on viral contigs"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+
+```
+#PBS -l walltime=72:00:00
+#PBS -l nodes=1:ppn=48
+#PBS -l mem=1000GB
+#PBS -j oe
+#PBS -A PAS1117
+
+WORK_DIR=/users/PAS1117/osu8359/work_dir/data/L4/A1
+SPADES=/users/PAS1117/osu8359/tools/SPAdes-3.11.1-Linux/bin/spades.py
+FULL_FWD=$WORK_DIR/VIR_L4_A1_Deep_fwd_val_1.fq.gz
+FULL_REV=$WORK_DIR/VIR_L4_A1_Deep_rev_val_2.fq.gz
+LONG_READS=$WORK_DIR/L4.A1.2D.pass.reads.fa.gz
+
+BBMAP=/users/PAS1117/osu8359/tools/bbmap
+
+mkdir -p $WORK_DIR/spades/0.1
+mkdir $WORK_DIR/spades/0.1/short.only
+mkdir $WORK_DIR/spades/0.1/hybrid
+
+echo "Subsampling the reads to 0.1" >> $WORK_DIR/spades/0.1/run.log
+
+for s in 1111 2222 3333
+do
+
+seqtk sample -s $s $FULL_FWD 0.1 | gzip -c > $TMPDIR/fwd.fq.gz
+seqtk sample -s $s $FULL_REV 0.1 | gzip -c > $TMPDIR/rev.fq.gz
+
+READ_COUNT_FWD=$(zcat $TMPDIR/fwd.fq.gz | grep -c '^+')
+READ_COUNT_REV=$(zcat $TMPDIR/rev.fq.gz | grep -c '^+')
+
+echo "A total of $READ_COUNT_FWD forward reads and $READ_COUNT_REV reverse reads were subsampled" >> $WORK_DIR/spades/0.1/run.log
+
+BP_COUNT_FWD=$(zcat $TMPDIR/fwd.fq.gz | paste - - - - | cut -f 2 | tr -d '\n' | wc -c)
+BP_COUNT_REV=$(zcat $TMPDIR/rev.fq.gz | paste - - - - | cut -f 2 | tr -d '\n' | wc -c)
+
+echo "Running bbnorm on the reads" >> $WORK_DIR/spades/0.1/run.log
+
+$BBMAP/bbnorm.sh in=$TMPDIR/fwd.fq.gz in2=$TMPDIR/rev.fq.gz out=$TMPDIR/fwd.norm.fq.gz out2=$TMPDIR/rev.norm.fq.gz ecc=t bits=16 prefilter
+
+READ_COUNT_FWD=$(zcat $TMPDIR/fwd.norm.fq.gz | grep -c '^+')
+READ_COUNT_REV=$(zcat $TMPDIR/rev.norm.fq.gz | grep -c '^+')
+
+echo "Following bbnorm, a total of $READ_COUNT_FWD forward reads and $READ_COUNT_REV reverse reads remained" >> $WORK_DIR/spades/0.1/run.log
+
+
+echo "Running metaSPAdes with short reads only" >> $WORK_DIR/spades/0.1/run.log
+
+$SPADES \
+--meta \
+--pe1-1 $TMPDIR/fwd.norm.fq.gz \
+--pe1-2 $TMPDIR/rev.norm.fq.gz \
+--memory 1000 \
+--only-assembler \
+-k 21,33,55,77,99,127 \
+--threads 48 \
+-o $TMPDIR/short.only
+
+echo "moving files" >> $WORK_DIR/spades/0.1/run.log
+mv $TMPDIR/short.only/scaffolds.fasta $WORK_DIR/spades/0.1/short.only/short.scaffolds.$s.0.1.fa
+mv $TMPDIR/short.only/spades.log $WORK_DIR/spades/0.1/short.only/spades.$s.log
+
+echo "Running metaSPAdes with short reads and long reads" >> $WORK_DIR/spades/0.1/run.log
+
+$SPADES \
+--meta \
+--pe1-1 $TMPDIR/fwd.norm.fq.gz \
+--pe1-2 $TMPDIR/rev.norm.fq.gz \
+--nanopore $LONG_READS \
+--memory 1000 \
+--only-assembler \
+-k 21,33,55,77,99,127 \
+--threads 48 \
+-o $TMPDIR/hybrid
+
+echo "moving files" >> $WORK_DIR/spades/0.1/run.log
+mv $TMPDIR/hybrid/scaffolds.fasta $WORK_DIR/spades/0.1/hybrid/hybrid.scaffolds.$s.0.1.fa
+mv $TMPDIR/hybrid/spades.log $WORK_DIR/spades/0.1/hybrid/spades.$s.log
+done
+
+```
+
+```{r}
+library(cowplot)
+library(ggsci)
+library(tidyverse)
+df <- read_csv('./data/triplicated.subsampled.virsorter.data.csv')
+df$replicate<-as.factor(df$replicate)
+counts <- df %>% group_by(replicate, coverage, type) %>% summarise(viral_contig_count=n(), circular=sum(is.circular))
+ggplot(counts, aes(x=coverage, y=circular, color=type)) + geom_point(size=4) +
+  labs(
+    x = "Mbp of sequenced virome",
+    y = "Number of circular viral genomes") +
+  theme(legend.position="none",
+        axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14),
+        axis.title.x = element_text(size=16, face='bold'),
+        axis.title.y = element_text(size=16, face='bold'),
+        plot.title = element_text(size=18, face='bold', hjust = 0)) + 
+  scale_color_npg() +
+  scale_x_discrete(labels=c("0.1" = "pig", 
+                            "0.2" = "cat", 
+                            "0.3" = "Dose 0.5", 
+                            "0.4" = "Dose 0.5", 
+                            "0.5" = "Dose 0.5", 
+                            "0.6" = "Dose 0.5", 
+                            "0.7" = "Dose 0.5")) 
+
+```
+
+```{r}
+
+tara_mean=8901634615
+
+tmp<-counts %>% gather(key="count_type", value='count', viral_contig_count, circular)
+tmp$type<-as.factor(tmp$type)
+tmp$count_type<-as.factor(tmp$count_type)
+levels(tmp$count_type)<-c('Predicted circular genomes', 'Predicted viral genomes')
+ggplot(tmp, aes(x=coverage, y=count, fill=type)) + 
+  geom_point(size=3, alpha=0.7, pch=21, color='black') + 
+  facet_wrap(~count_type, nrow=2, ncol=1, scales='free_y') +
+  labs(x='Gbp of short-read data',
+       y='Number of Viral Genomes >10kbp') +
+  scale_fill_npg() + 
+  theme(legend.position='none',
+        strip.background=element_rect(fill='white'),
+        strip.text=element_text(face='bold', hjust=0, size=14),
+        axis.title.x = element_text(size=14, face='bold'),
+        axis.title.y = element_text(size=14, face='bold'),
+        panel.spacing.y=unit(1.5, 'lines')) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
+```
+
+## Are the differences significant?
+### Student t-test results for circular contigs
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(knitr)
+circular_test<- tmp %>% 
+  group_by(coverage, type, count_type) %>% 
+  summarise(value=list(count)) %>%
+  filter(count_type=='Predicted circular genomes') %>%
+  select(-count_type) %>%
+  spread(type, value) %>%
+  ungroup() %>%
+  group_by(coverage) %>%
+  mutate(p_value=t.test(unlist(hybrid), unlist(short))$p.value,
+         short_mean=mean(unlist(short)),
+         hybrid_mean=mean(unlist(hybrid))) %>%
+  mutate(difference=hybrid_mean/short_mean) %>%
+  select(coverage, p_value, short_mean, hybrid_mean, difference)
+kable(circular_test, format='markdown')
+```
+
+### Student t-test results for viral contigs
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+viral_test <- tmp %>% 
+  group_by(coverage, type, count_type) %>% 
+  summarise(value=list(count)) %>%
+  filter(count_type=='Predicted viral genomes') %>%
+  select(-count_type) %>%
+  spread(type, value) %>%
+  ungroup() %>%
+  group_by(coverage) %>%
+  mutate(p_value=t.test(unlist(hybrid), unlist(short))$p.value,
+         short_mean=mean(unlist(short)),
+         hybrid_mean=mean(unlist(hybrid))) %>%
+  mutate(difference=hybrid_mean/short_mean) %>%
+  select(coverage, p_value, short_mean, hybrid_mean, difference)
+kable(viral_test, format='markdown')
+
+```
