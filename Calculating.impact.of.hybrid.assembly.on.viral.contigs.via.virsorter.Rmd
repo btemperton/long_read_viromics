@@ -42,8 +42,8 @@ READ_COUNT_REV=$(zcat $TMPDIR/rev.fq.gz | grep -c '^+')
 
 echo "A total of $READ_COUNT_FWD forward reads and $READ_COUNT_REV reverse reads were subsampled" >> $WORK_DIR/spades/0.1/run.log
 
-BP_COUNT_FWD=$(zcat $TMPDIR/fwd.fq.gz | paste - - - - | cut -f 2 | tr -d '\n' | wc -c)
-BP_COUNT_REV=$(zcat $TMPDIR/rev.fq.gz | paste - - - - | cut -f 2 | tr -d '\n' | wc -c)
+BP_COUNT_FWD=$(zcat $TMPDIR/fwd.fq.gz | paste - - - - | cut -f 2 | awk '{sum += length($0)} END {print sum}')
+BP_COUNT_REV=$(zcat $TMPDIR/rev.fq.gz | paste - - - - | cut -f 2 | awk '{sum += length($0)} END {print sum}')
 
 echo "Running bbnorm on the reads" >> $WORK_DIR/spades/0.1/run.log
 
@@ -121,25 +121,29 @@ ggplot(counts, aes(x=coverage, y=circular, color=type)) + geom_point(size=4) +
 
 ```{r}
 
-tara_mean=8901634615
+tara_mean_bp=8901634615/1e9
+wec_total_bp=sum(c(15711528374, 15131475101))
 
-tmp<-counts %>% gather(key="count_type", value='count', viral_contig_count, circular)
+tmp<-counts %>% gather(key="count_type", value='count', viral_contig_count, circular) %>%
+  mutate(bp_estimate_gb=coverage * wec_total_bp / 1e9)
 tmp$type<-as.factor(tmp$type)
 tmp$count_type<-as.factor(tmp$count_type)
 levels(tmp$count_type)<-c('Predicted circular genomes', 'Predicted viral genomes')
-ggplot(tmp, aes(x=coverage, y=count, fill=type)) + 
+ggplot(tmp, aes(x=bp_estimate_gb, y=count, fill=type)) + 
   geom_point(size=3, alpha=0.7, pch=21, color='black') + 
   facet_wrap(~count_type, nrow=2, ncol=1, scales='free_y') +
   labs(x='Gbp of short-read data',
-       y='Number of Viral Genomes >10kbp') +
+       y='Number of Viral Genomes >10kbp',
+       caption='Dashed line represents mean size of Global Ocean Virome Datasets')+
   scale_fill_npg() + 
+  geom_vline(xintercept=tara_mean_bp, linetype='dashed') +
   theme(legend.position='none',
         strip.background=element_rect(fill='white'),
         strip.text=element_text(face='bold', hjust=0, size=14),
         axis.title.x = element_text(size=14, face='bold'),
         axis.title.y = element_text(size=14, face='bold'),
         panel.spacing.y=unit(1.5, 'lines')) +
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
 ```
 
 ## Are the differences significant?
