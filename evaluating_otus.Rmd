@@ -24,5 +24,22 @@ source('useful.functions.R')
 From the VContact2 data, it looks like the long reads are not uncovering a vast diversity of new phages at the VC level. However, the abundance data suggests that the long reads are in fact highly abundant members of their clusters. One possibility is that they are adding diversity at the phage OTU level. To test this, we are going to resolve all the sequence data we used for the abundance plots into phage OTUs using Simon's clustering script:
 
 ```
+#PBS -N cluster.otus
+#PBS -l walltime=24:00:00
+#PBS -l nodes=1:ppn=27
+#PBS -j oe
+#PBS -A PAS1117
 
+WORK_DIR=/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter
+READS=$WORK_DIR/selected.viral.genomes.for.FVE.fna
+
+cd $TMPDIR
+cp $READS ./reads.fa
+/fs/project/PAS1117/TARA_POLAR/Ann_scripts/Cluster_genomes_simon_3.pl -c 80 -i 95 -f reads.fa
+
+mkdir -p $WORK_DIR/clstr.c80.i95
+cp reads* $WORK_DIR/clstr.c80.i95
+
+rm -f $WORK_DIR/clstr.c80.i95/reads.fa
 ```
+

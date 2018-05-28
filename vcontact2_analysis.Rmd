@@ -127,7 +127,7 @@ With this cutoff, just under 1% of the `r nrow(contig_type_counts %>% filter(q_v
 
 ```{r, message=FALSE, echo=FALSE}
 library(knitr)
-kable(L4_only_clusters %>% filter(q_value<0.05) %>%
+kable(L4_only_clusters %>%
         select(cluster_id, cluster_size, L4_hybrid, L4_pilon, L4_short), format='markdown')
 ```
 
@@ -135,8 +135,8 @@ This compares to `r nrow(contig_type_counts %>% filter(q_value<0.05) %>% filter(
 
 ```{r, echo=FALSE, message=FALSE}
 
-gov_only_clusters<-contig_type_counts %>% filter(q_value<0.05) %>% filter(GOV/cluster_size==1)
-gov_plus_L4_only_clusters<-contig_type_counts %>% filter(q_value<0.05) %>% filter((GOV + L4_count)/cluster_size==1)
+gov_only_clusters<-contig_type_counts %>% filter(GOV/cluster_size==1)
+gov_plus_L4_only_clusters<-contig_type_counts %>% filter((GOV + L4_count)/cluster_size==1)
 L4_enriched_GOV<- nrow(gov_plus_L4_only_clusters) - nrow(gov_only_clusters)
 
 ```
@@ -189,7 +189,6 @@ contigs_to_include<-clusters %>%
 contigs_to_include$q_value<-qvalue(contigs_to_include$p_value)[['qvalues']]
 
 contigs_to_include <- contigs_to_include %>% 
-  filter(q_value<0.05) %>%
   filter(L4_pilon > 0)
 ```
 
@@ -252,16 +251,17 @@ So, if you look at all the data together, there doesnt' appear to be any signifi
 ```{r, message=FALSE, warning=FALSE}
 per_cluster <- edge_map %>%
   filter(edge_classification %in% 
-           c('GOV_GOV', 'GOV_L4_pilon', 'GOV_L4_short', 'GOV_L4_hybrid', 'GOV_RefSeq')) %>%
+           c('GOV_GOV', 'GOV_L4_pilon', 'GOV_L4_hybrid')) %>%
   select(source_cluster_id, edge_classification, weight) %>%
   group_by(source_cluster_id, edge_classification) %>%
   summarise(value=list(weight)) %>%
   spread(edge_classification, value) %>%
   ungroup() %>%
+  filter(source_cluster_id !=1508) %>% # contains no GOV_GOV edges
   group_by(source_cluster_id) %>%
-  mutate(p_value=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$p.value,
-         conf.level=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$conf.int[1],
-         estimate=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), alternative = 'greater', conf.int = TRUE)$estimate,
+  mutate(p_value=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), conf.int = TRUE)$p.value,
+         conf.level=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), conf.int = TRUE)$conf.int[1],
+         estimate=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_pilon), conf.int = TRUE)$estimate,
          gov_gov_size=length(unlist(GOV_GOV)),
          gov_pilon_size=length(unlist(GOV_L4_pilon)),
          gov_gov_median=median(unlist(GOV_GOV)),
@@ -269,10 +269,11 @@ per_cluster <- edge_map %>%
   select(source_cluster_id, gov_gov_size, gov_pilon_size, gov_gov_median, gov_pilon_median, p_value, conf.level, estimate)
 
 per_cluster$q_value<-qvalue(per_cluster$p_value)[['qvalues']]
+kable(per_cluster %>% filter(q_value<0.05), format='markdown')
   
 ```
 
-Out of 210 clusters, 69 of them have a significant q-value. Within these, the median 95% confidence level was 2.11. That is to say, that where there was a significant difference, the difference in weights between GOV-GOV and GOV-pilon members of a cluster was small for most clusters, with several showing larger differences. It is worth remembering that edge weight is scored from 1 to 300, and the maximum significant median difference between GOV-GOV and GOV-pilon edges is 14.09. Therefore, we can say that there is some evidence to suggest that error-rate on pilon reads may be affecting protein calling, and therefore reducing edge-weights within clusters, but the effect is small.
+Out of 284 clusters, 154 of them have a significant q-value. Within these, the median 95% confidence level was 2.11. That is to say, that where there was a significant difference, the difference in weights between GOV-GOV and GOV-pilon members of a cluster was small for most clusters, with several showing larger differences. It is worth remembering that edge weight is scored from 1 to 300, and the maximum significant median difference between GOV-GOV and GOV-pilon edges is 14.09. Therefore, we can say that there is some evidence to suggest that error-rate on pilon reads may be affecting protein calling, and therefore reducing edge-weights within clusters, but the effect is small.
 
 ```{r, message=FALSE, warning=FALSE}
 filtered_per_cluster <- per_cluster %>% filter(q_value < 0.05)
@@ -280,6 +281,32 @@ ggplot(filtered_per_cluster, aes(x=conf.level)) + geom_density(fill='grey', colo
   xlab('95% confidence interval of median difference between edge weights')
 ```
 
-## Which are the worst offenders?
-Is it to do with coverage? Are they lower abundance contigs?
+```{r, warning=FALSE}
+gov_vs_hybrid <- edge_map %>%
+  filter(edge_classification %in% 
+           c('GOV_GOV', 'GOV_L4_pilon', 'GOV_L4_hybrid')) %>%
+  select(source_cluster_id, edge_classification, weight) %>%
+  group_by(source_cluster_id, edge_classification) %>%
+  summarise(value=list(weight)) %>%
+  spread(edge_classification, value) %>%
+  ungroup() %>%
+  filter(source_cluster_id !=1508) %>% # contains no GOV_GOV edges
+  group_by(source_cluster_id) %>%
+  mutate(p_value=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_hybrid), conf.int = TRUE)$p.value,
+         conf.level=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_hybrid), conf.int = TRUE)$conf.int[1],
+         estimate=wilcox.test(unlist(GOV_GOV), unlist(GOV_L4_hybrid), conf.int = TRUE)$estimate,
+         gov_gov_size=length(unlist(GOV_GOV)),
+         gov_hybrid_size=length(unlist(GOV_L4_pilon)),
+         gov_gov_median=median(unlist(GOV_GOV)),
+         gov_hybrid_median=median(unlist(GOV_L4_pilon))) %>%
+  select(source_cluster_id, gov_gov_size, gov_hybrid_size, gov_gov_median, gov_hybrid_median, p_value, conf.level, estimate)
+
+gov_vs_hybrid$q_value<-qvalue(gov_vs_hybrid$p_value)[['qvalues']]
+gov_vs_hybrid<-gov_vs_hybrid %>% filter(q_value<0.05) %>% 
+  mutate(difference=gov_gov_median-gov_hybrid_median)
+
+ggplot(gov_vs_hybrid, aes(x=difference)) + 
+  geom_density(fill='grey', color='white') +
+  xlab('Difference between median GOV-GOV and median GOV-hybrid edge weights')
+```
 

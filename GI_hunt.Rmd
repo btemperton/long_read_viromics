@@ -1,0 +1,229 @@
+---
+title: "Do OLC reads contain GIs?"
+date: "`r Sys.Date()`"
+author: "Ben Temperton"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+bibliography: bibliography.bib
+csl: the-isme-journal.csl
+---
+
+
+```
+#PBS -N gi_hunt
+#PBS -l walltime=24:00:00
+#PBS -l nodes=1:ppn=28
+#PBS -l mem=112GB
+#PBS -j oe
+#PBS -A PAS1117
+
+source activate local
+
+WORK_DIR=/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search
+mkdir -p $WORK_DIR
+
+LOGFILE=$WORK_DIR/gi_hunt.log
+
+GENOMES=/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/selected.viral.genomes.for.FVE.fna
+
+echo "Starting analysis" > $LOGFILE
+
+cd $TMPDIR
+
+FWD=/users/PAS1117/osu8359/work_dir/data/L4/A1/VIR_L4_A1_Deep_fwd_val_1.fq.gz
+REV=/users/PAS1117/osu8359/work_dir/data/L4/A1/VIR_L4_A1_Deep_rev_val_2.fq.gz
+
+cd $TMPDIR
+cp $GENOMES ./ref.fa
+/users/PAS1117/osu8359/tools/bbmap/bbmap.sh ref=ref.fa
+
+echo "Finished indexing" >> $LOGFILE
+
+/users/PAS1117/osu8359/tools/bbmap/bbmap.sh \
+in=$FWD \
+in2=$REV \
+ambiguous=all \
+idfilter=0.90 \
+idtag=t \
+lengthtag=t \
+overwrite=t \
+scafstats=$WORK_DIR/pre.length.filter.scafstats.txt \
+bhist=$WORK_DIR/pre.length.filter.bhist.txt \
+indelhist=$WORK_DIR/pre.length.filter.indelhist.txt \
+mhist=$WORK_DIR/pre.length.filter.mhist.txt \
+idhist=$WORK_DIR/pre.length.filter.idhist.txt \
+statsfile=$WORK_DIR/pre.length.filter.statsfile.txt \
+covstats=$WORK_DIR/pre.length.filter.covstats.txt \
+rpkm=$WORK_DIR/pre.length.filter.rpkm.txt \
+basecov=$WORK_DIR/pre.length.filter.basecov.txt \
+outm=L4.vs.all.id90.pre.length.filter.sam 2>&1 | tee -a $LOGFILE
+
+cat L4.vs.all.id90.pre.length.filter.sam | samtools view -buS - | samtools sort -o L4.vs.all.id90.pre.length.filter.sorted.bam
+
+#filter by alignments > 50
+samtools view -h L4.vs.all.id90.pre.length.filter.sorted.bam | perl -lane '$l = 0; $F[15] =~ s/[YL:Z](\d+),/$l=$1/eg; print if $l > 50 or /^@/' | samtools view -bS - | samtools sort -o L4.vs.all.id90.post.length.filter.sorted.bam
+
+samtools index L4.vs.all.id90.post.length.filter.sorted.bam
+mv L4.vs.all.id90.post.length.filter.sorted.bam* $WORK_DIR
+
+
+#Get the genome lengths for coverage, excluding those that have fewer than 150 reads. This is the minimum needed for a 10k genome to have 5-fold coverage with maximum read length.
+samtools idxstats L4.vs.all.id90.post.length.filter.sorted.bam | awk -F '\t' '{if ($3>150) printf "%s\t%s\n",$1,$2}' > genome.lengths.txt
+
+
+library(tidyverse)
+library(magrittr)
+
+cov <- read_tsv('L4.vs.all.id90.post.length.filter.sorted.per.base.coverage.tbl.gz', 
+                 col_names = FALSE) %>%
+  set_colnames(c('contig', 'locus', 'depth'))
+  
+stats <- cov %>% group_by(contig) %>%
+        summarise(median_coverage=median(depth),
+        mean_coverage=mean(depth),
+        min_coverage=min(depth),
+        max_coverage=max(depth)) 
+        
+write_tsv(stats, 'L4.vs.all.id90.post.length.filter.sorted.per.base.coverage.stats.txt.gz')
+
+filtered_stats <- stats %>%
+        filter(median_coverage > 5)
+        
+cov <- cov %>%
+        filter(contig %in% filtered_stats$contig)
+        
+write_tsv(cov, 'L4.vs.all.id90.post.length.filter.sorted.per.base.coverage.min.median.cov.5.tbl.gz')
+
+
+
+```
+
+Then do sliding window coverage using data.table (thanks to [here](https://stackoverflow.com/questions/48721332/genome-coverage-as-sliding-window?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa) for example)
+
+```{r}
+library(data.table)    
+library(magrittr)
+cov <-read_tsv('./data/tmp.txt')
+
+slideFunct <- function(data, name='test', window=500, step=1, cutoff=0.2){
+  
+  total <- length(data)
+  spots <- seq(from=1, to=(total-window), by=step)
+  result <- vector(length = length(spots))
+  start <- vector(length = length(spots))
+  end <- vector(length = length(spots))
+  for(i in 1:length(spots)){
+    start[i] <- i * step - step +1
+    result[i] <- median(data[spots[i]:(spots[i]+window)])
+    end[i] <- i * step - step + window
+  }
+  median_value=median(data)
+  df<-data.frame('contig'=name, 
+                 'start'=start, 'end'=end,
+                 'window_median_coverage'=result,
+                 'contig_median_coverage'=median_value,
+                 'potential_GI'= result < median_value * cutoff)
+  print(paste('done', name))
+  write_csv(df, 
+            paste('/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/windows/', 
+                  name, 
+                  '.windows.csv.gz', sep=''))
+  return(list('start'=start, 
+              'end'=end, 
+              'window_median_coverage'=result))
+}
+
+
+tmp<-as.data.table(cov)[, slideFunct(depth, name=contig, window=500, step=1, cutoff=0.2), by = contig]
+
+
+
+```
+
+
+
+We can use the rle function to identify blocks of 'TRUE' appears in the potential_GI column, and then sum over these to count the number of blocks.
+
+```{r}
+library(tidyverse)
+
+
+test_df<-read_csv('./data/vSAG-37-F6.windows.csv.gz')
+sum(rle(test_df$potential_GI)$values)
+
+files<-list.files(pattern='*.windows.csv.gz')
+df<-data.frame('contig'=gsub('(.*).windows.csv.gz', '\\1', files), 
+               'file'=files, stringsAsFactors = FALSE)
+
+count_GIs<-function(x){
+  tmp<-suppressMessages(read_csv(x))
+  return(sum(rle(tmp$potential_GI)$values))
+}
+
+calculate_GI_lengths<-function(x){
+  tmp<-suppressMessages(read_csv(x))
+  return(sum(
+    rle(tmp$potential_GI)$lengths[which(
+      rle(tmp$potential_GI)$values)]))
+}
+
+df$gi_count<-sapply(df$file,count_GIs)
+df$gi_length<-sapply(df$file,calculate_GI_lengths)
+
+
+write_tsv(df, '/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/gi_counts.tsv')
+```
+
+```
+samtools idxstats L4.vs.all.id90.post.length.filter.sorted.bam | cut -f 1,2,3 > mapped.reads.tsv
+```
+
+```{r}
+library(magrittr)
+
+df<-read_tsv('/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/gi_counts.tsv')
+mapping<-read_tsv('/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/mapped.reads.tsv', col_names=FALSE) %>%
+  set_colnames(c('contig', 'genome_length', 'num_mapped_reads'))
+
+df2<- df %>% left_join(mapping)
+
+write_tsv(df2, '/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/gi_counts.tsv')
+```
+
+Now we can filter out the ones with an RPKG of <=1. The total number of reads used for mapping were (58570386 fwd, 58570386 reverse). The total number of bases were (15711528374 fwd, 15131475101 reverse)
+
+```
+pigz -dc VIR_L4_A1_Deep_rev_val_2.fq.gz |  awk 'NR%4==2{c++; l+=length($0)}
+          END{
+                print "Number of reads: "c; 
+                print "Number of bases in reads: "l
+              }'
+```
+
+Need to check this on some examples.
+
+```{r}
+source('useful.functions.R')
+bp_fwd=15711528374
+bp_rev=15131475101
+total_bp_gb=sum(c(bp_fwd, bp_rev)) / 1e9
+df<-read_tsv('./data/gi_counts.tsv') %>%
+  mutate(genome_length_kb=genome_length/1000) %>%
+  select(-genome_length) %>%
+  mutate(gi_length=gi_length+(gi_count*500)) %>% 
+  mutate(rpkg=num_mapped_reads / genome_length_kb / total_bp_gb,
+         num_gi_per_kb=gi_count/genome_length_kb,
+         gi_bp_per_kb=gi_length/genome_length_kb) %>%
+  filter(rpkg >1 & gi_count > 0) %>%
+  select(-file) %>%
+  arrange(desc(gi_bp_per_kb)) %>%
+  add_contig_types() %>%
+  filter(contig_type %in% c('L4 pilon', 'L4 short', 'L4 hybrid'))
+
+summary_df<-df %>% group_by(contig_type) %>%
+  summarise(total_gi_count=sum(gi_count),
+            total_gi_length=sum(gi_length),
+            mean_num_gi_per_kb=mean(num_gi_per_kb),
+            mean_len_gi_per_kb=mean(gi_bp_per_kb))
+```

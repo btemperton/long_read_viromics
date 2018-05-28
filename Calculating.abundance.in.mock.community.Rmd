@@ -42,3 +42,29 @@ samtools index long.reads.vs.mock.genomes.mapped.minimap2.sorted.bam
 mv long.reads.vs.mock.genomes.mapped.minimap2.sorted.bam* /users/PAS1117/osu8359/work_dir/data/mock_community
 
 ```
+
+```{r}
+library(tidyverse)
+library(ggsci)
+library(cowplot)
+tmp<-read_tsv('mock.community.coverage.tsv')
+mdl<-lm(tmp$long_read_median_coverage~tmp$short_read_median_coverage)
+ggplot(tmp, aes(x=short_read_median_coverage,
+                y=long_read_median_coverage,
+                fill=names)) +
+  geom_point(pch=21, size=4) +
+  labs(x='Short Read Median Coverage',
+       y='Long Read Median Coverage') +
+  scale_fill_npg() +
+  geom_abline(intercept=mdl$coefficients[1], slope=mdl$coefficients[2]) +
+  geom_text(x=12000, y=10000, size=8,
+            label=paste('R^2 == ',
+                        format(summary(mdl)$r.squared, digits=3), sep=''), parse = TRUE) +
+  theme(legend.title = element_blank(),
+        axis.title = element_text(size=16, face='bold'),
+        axis.text = element_text(size=14))
+
+```
+
+
+
