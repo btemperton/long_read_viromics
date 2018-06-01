@@ -156,10 +156,17 @@ files<-list.files(pattern='*.windows.csv.gz')
 df<-data.frame('contig'=gsub('(.*).windows.csv.gz', '\\1', files), 
                'file'=files, stringsAsFactors = FALSE)
 
-count_GIs<-function(x){
+analyse_GIs<-function(x){
   tmp<-suppressMessages(read_csv(x))
-  return(sum(rle(tmp$potential_GI)$values))
-}
+  
+  return(list('count'=sum(rle(tmp$potential_GI)$values),
+              'total_length'=sum(
+    rle(tmp$potential_GI)$lengths[which(
+      rle(tmp$potential_GI)$values)]),
+              'max_length'=max(
+    rle(tmp$potential_GI)$lengths[which(
+      rle(tmp$potential_GI)$values)])))
+  }
 
 calculate_GI_lengths<-function(x){
   tmp<-suppressMessages(read_csv(x))
@@ -168,9 +175,10 @@ calculate_GI_lengths<-function(x){
       rle(tmp$potential_GI)$values)]))
 }
 
-df$gi_count<-sapply(df$file,count_GIs)
-df$gi_length<-sapply(df$file,calculate_GI_lengths)
-
+tmp<-sapply(df$file,analyse_GIs)
+tmp<-data.frame(t(tmp))
+tmp$file<-row.names(tmp)
+df <- df %>% left_join(tmp)
 
 write_tsv(df, '/users/PAS1117/osu8359/work_dir/data/L4/A1/VirSorter/gi_search/gi_counts.tsv')
 ```
@@ -204,6 +212,7 @@ pigz -dc VIR_L4_A1_Deep_rev_val_2.fq.gz |  awk 'NR%4==2{c++; l+=length($0)}
 Need to check this on some examples.
 
 ```{r}
+library(tidyverse)
 source('useful.functions.R')
 bp_fwd=15711528374
 bp_rev=15131475101
@@ -219,11 +228,121 @@ df<-read_tsv('./data/gi_counts.tsv') %>%
   select(-file) %>%
   arrange(desc(gi_bp_per_kb)) %>%
   add_contig_types() %>%
-  filter(contig_type %in% c('L4 pilon', 'L4 short', 'L4 hybrid'))
+  filter(contig_type %in% c('L4 pilon', 'L4 short', 'L4 hybrid')) %>%
+  mutate(contig_type=ifelse(contig_type=='L4 pilon', 'OLC', 'DBG'))
 
 summary_df<-df %>% group_by(contig_type) %>%
   summarise(total_gi_count=sum(gi_count),
             total_gi_length=sum(gi_length),
             mean_num_gi_per_kb=mean(num_gi_per_kb),
-            mean_len_gi_per_kb=mean(gi_bp_per_kb))
+            mean_len_gi_per_kb=mean(gi_bp_per_kb), 
+            total_number_of_contigs=n())
+```
+
+Now let's do some subsampling. If we pick a random 309 contigs, what is distribution of total number of GIs identified?
+
+```{r}
+library(ggplot2)
+library(cowplot)
+library(ggsci)
+subsample_gis<-data.frame('counts'=sapply(1:10000, function(n){
+  tmp<-df %>% sample_n(309)
+  return(sum(tmp$gi_count))
+}))
+
+p1<-ggplot(subsample_gis, aes(x=counts)) + 
+  geom_density() +
+  geom_vline(xintercept=1338,linetype='dashed', color='red') +
+  labs(x='Number of GIs',
+       y='Density')
+
+#caption='N=10,000 subsamples of 309 contigs\nDashed line represents measured value in OLC-derived contigs'
+```
+
+```{r}
+subsample_gis<-data.frame('counts'=sapply(1:10000, function(n){
+  tmp<-df %>% sample_n(309)
+  return(sum(tmp$gi_length))
+}))
+
+p2<-ggplot(subsample_gis, aes(x=counts)) + 
+  geom_density() +
+  geom_vline(xintercept=1953020,linetype='dashed', color='red') +
+  labs(x='Length of GIs',
+       y='Density', 
+       caption='N=10,000 subsamples of 309 contigs\nDashed line represents measured value in OLC-derived contigs')
+```
+
+
+```{r}
+plot_grid(p1, p2, labels=c('A', 'B'), align='h', nrow = 2)
+```
+
+# Analysis of tig404 GI
+
+```{r}
+library(ggbio)
+library(magrittr)
+library(GenomicRanges)
+library(dplyr)
+library(data.table)
+library(zoo)
+coverage<-read_tsv('../../data/L4.virome/gi_search/per.position.coverage.tig404.tsv', col_names=FALSE) %>% 
+  set_colnames(c('contig', 'position', 'coverage')) 
+
+slideFunct <- function(data, name='test', window=500, step=1, cutoff=0.2){
+  
+  total <- length(data)
+  spots <- seq(from=1, to=(total-window), by=step)
+  result <- vector(length = length(spots))
+  start <- vector(length = length(spots))
+  end <- vector(length = length(spots))
+  for(i in 1:length(spots)){
+    start[i] <- i * step - step +1
+    result[i] <- median(data[spots[i]:(spots[i]+window)])
+    end[i] <- i * step - step + window
+  }
+  median_value=median(data)
+  df<-data.frame('contig'=name, 
+                 'start'=start, 'end'=end,
+                 'window_median_coverage'=result,
+                 'contig_median_coverage'=median_value,
+                 'potential_GI'= result < median_value * cutoff)
+  return(df)
+}
+
+windows<-slideFunct(coverage$coverage, name='VIRSorter_tig00000404_pilon-cat_1')
+rle(windows$potential_GI)
+```
+
+```{r}
+
+
+windows_coverage<- coverage %>% group_by(contig) %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$position, width=100, by=50, FUN=min, align="left"),
+      window.end = rollapply(.$position, width=100, by=50, FUN=max, align="left"),
+      coverage = rollapply(.$coverage, width=100, by=50, FUN=mean, align="left")
+      )
+  )
+
+start_locus<-head(c(0, cumsum(rle(windows$potential_GI)$lengths))+1, -1)
+gr <- GRanges(seqnames = rep('VIRSorter_tig00000404_pilon-cat_1', length(start_locus)), 
+          IRanges(start = start_locus, 
+                  end = cumsum(rle(windows$potential_GI)$lengths)), 
+          strand = rep('*', length(start_locus)),
+          name = rle(windows$potential_GI)$values)
+
+data<-GRanges(seqnames = windows_coverage$contig,
+              IRanges(start=windows_coverage$window.start,
+                      width=50),
+              d=log(windows_coverage$coverage+1)*-1)
+
+
+ a <- ggbio() + 
+   circle(data , geom  = 'bar', aes(y = d), fill='#3C5488FF', color='#3C5488FF', trackWidth=17, radius=30) +
+   circle(gr,  geom = 'rect', aes(fill = name), space.skip = 0.001, radius=50) + 
+   scale_fill_npg() +
+   theme(legend.position='None') 
 ```
