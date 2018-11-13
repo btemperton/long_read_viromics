@@ -113,3 +113,45 @@ plot_heatmap<-function(sample_type='ALL', km=1, rank_per_sample=50, min_pct_samp
   return(p)
 }
 
+slideFunct<- function(data, name='test', window=500, step=1, cutoff=0.2){
+  
+  total <- length(data)
+  spots <- seq(from=1, to=(total-window), by=step)
+  result <- vector(length = length(spots))
+  start <- vector(length = length(spots))
+  end <- vector(length = length(spots))
+  for(i in 1:length(spots)){
+    start[i] <- i * step - step +1
+    result[i] <- median(data[spots[i]:(spots[i]+window)])
+    end[i] <- i * step - step + window
+  }
+  median_value=median(data)
+  df<-data.frame('contig'=name, 
+                 'start'=start, 'end'=end,
+                 'window_median_coverage'=result,
+                 'contig_median_coverage'=median_value,
+                 'potential_GI'= result < median_value * cutoff)
+  return(df)
+}
+
+
+analyse_GIs<-function(x){
+  tmp<-suppressMessages(read_csv(x))
+  
+  return(list('count'=sum(rle(tmp$potential_GI)$values),
+              'total_length'=sum(
+                rle(tmp$potential_GI)$lengths[which(
+                  rle(tmp$potential_GI)$values)]),
+              'max_length'=max(
+                rle(tmp$potential_GI)$lengths[which(
+                  rle(tmp$potential_GI)$values)])))
+}
+
+calculate_GI_lengths<-function(x){
+  tmp<-suppressMessages(read_csv(x))
+  return(sum(
+    rle(tmp$potential_GI)$lengths[which(
+      rle(tmp$potential_GI)$values)]))
+}
+
+

@@ -1,0 +1,285 @@
+---
+title: "Figure3"
+author: "Ben Temperton"
+date: "20/06/2018"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#Let's first do the necessary data-wrangling that is needed:
+
+library(tidyverse)
+library(cowplot)
+library(magrittr)
+library(ggsci)
+library(scales)
+
+#show the palette
+show_col(pal_npg('nrc')(10))
+
+```
+```{r}
+pal_npg('nrc')(10)
+```
+
+```{r, message=F}
+tig404 <- read_csv('./data/all.1k.contigs.c80.i95.clstr.combined.dataset.csv') %>% 
+  filter(grepl('tig00000404', cluster_rep)) %>%
+  arrange(desc(ref_seq_start)) %>%
+  mutate(rank = row_number(desc(ref_seq_start)))
+```
+
+Get the GIs
+
+```{r}
+gi<-read_csv('./data/scratch/VIRSorter_tig00000404_pilon-cat_1.windows.csv.gz')
+regions<-rle(gi$potential_GI)
+ends<-cumsum(regions$lengths)
+starts<-c(ends-regions$lengths +1, 28706)
+ends<-c(ends, 29205)
+is_gi<-c(regions$values, FALSE)
+tig404_df<-data.frame(start=starts, end=ends, is_gi=is_gi)
+```
+
+```{r}
+align_p <- ggplot(tig404) +
+  
+  geom_rect(aes(xmin=start,
+              xmax=end,
+              ymin=nrow(tig404),
+              ymax=nrow(tig404)+10,
+              fill=is_gi),
+              color='black', data=tig404_df) +
+  
+  
+  geom_rect(aes(xmin=ref_seq_start,
+                xmax=ref_seq_end,
+                ymin=rank - 0.5,
+                ymax=rank + 0.5,
+                fill=cluster_member_type), data=tig404) +
+                
+  labs(x='locus (bp)') +
+  scale_fill_manual(values=c('#8491B4FF', '#B09C85FF', '#00A087FF', '#F39B7FFF')) +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0), breaks=c(5000, 10000, 15000, 20000, 25000, 29205)) +
+  theme(legend.position='none',
+              plot.title = element_text(face="bold", size=16, hjust=0),
+              axis.title.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.line.y=element_blank(),
+          axis.title.x=element_text(size=16, face='bold'))
+```
+
+Get the microdiversity
+```{r, message=F, warning=F}
+library(zoo)
+nuc_d <- read_tsv('./data/scratch/L4.contigs_filtered_MINCOV_pi_and_subsamples_data.tsv') %>%
+  filter(grepl('tig00000404', contig))
+
+tmp<-data.frame(pos=1:29205, pi=0)
+tmp[nuc_d$pos, ]$pi<-nuc_d$pi
+
+nuc_d_windows <- tmp %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=100, by=50, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=100, by=50, FUN=max, align="left"),
+      max_pi = rollapply(.$pi, width=100, by=50, FUN=max, align="left")
+     )
+  )
+
+nuc_d_windows[nuc_d_windows$max_pi==0,]$max_pi<-NA
+
+pi_p<-ggplot(nuc_d_windows, aes(x=window.start, y=max_pi)) + 
+  geom_bar(stat = 'identity', fill='#4DBBD5FF', color='#4DBBD5FF') + 
+  scale_y_continuous(expand = c(0,0), breaks=c(0, 0.3)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  labs(y=expression(pi['max'])) +
+  theme(legend.position='none',
+              axis.title.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.text.y=element_text(size=16),
+              axis.title.y=element_text(size=20, face='bold'))
+
+```
+
+Get the coverage
+```{r}
+library(Rsamtools)
+bamfile<-BamFile('./data/scratch/tig404.map.sorted.bam')
+p_param<-PileupParam(max_depth=100000, # default value is very low @ 250
+                     distinguish_strand=FALSE,
+                     min_nucleotide_depth=0,
+                     min_mapq=15,
+                     min_base_quality=10) 
+param<-ScanBamParam(which=GRanges('tig00000404_pilon', IRanges(start=1, end=29205)))
+coverage<-pileup(bamfile, scanBamParam=param, pileupParam=p_param) %>%
+  group_by(pos) %>%
+  summarise(coverage=sum(count))
+
+coverage_windows <- coverage %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=100, by=50, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=100, by=50, FUN=max, align="left"),
+      median_coverage = rollapply(.$coverage, width=100, by=50, FUN=median, align="left")
+     )
+  )
+
+coverage_p<-ggplot(coverage_windows, aes(x=window.start, y=median_coverage)) + 
+  geom_bar(stat = 'identity', fill='#E64B35FF', color='#E64B35FF') + 
+  scale_y_continuous(expand = c(0,0), breaks=c(0, 11000)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  labs(y='coverage') +
+  theme(legend.position='none',
+              axis.title.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.text.y=element_text(size=16),
+              axis.title.y=element_text(size=16, face='bold'))
+```
+
+Get long read maps
+```{r}
+library(magrittr)
+paf<-read_tsv('./data/scratch/long.vs.tig404.paf.gz', col_names=FALSE) %>%
+  select(1:11) %>%
+  set_colnames(c('query_name',
+                 'query_length',
+                 'query_start',
+                 'query_end',
+                 'strand',
+                 'target_name',
+                 'target_length',
+                 'target_start',
+                 'target_end',
+                 'num_residues_matched',
+                 'alignment_block_length')) %>%
+  mutate(target_start=target_start+1,
+         target_end=target_end+1,
+         query_start=query_start+1,
+         query_end=query_end+1) %>%
+  filter(alignment_block_length > 2500) %>%
+  arrange(desc(target_start)) %>%
+  mutate(rank=row_number())
+
+align_long_p <- ggplot(paf) +
+  
+  geom_rect(aes(xmin=target_start,
+              xmax=target_end,
+              ymin=rank - 0.5,
+              ymax=rank + 0.5), 
+            fill='#B09C85FF',
+              color='#B09C85FF') +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  theme(legend.position='none',
+              axis.title=element_blank(),
+              axis.ticks=element_blank(),
+              axis.line=element_blank(),
+              axis.text=element_blank())
+```
+
+
+Make the Magic Happen
+```{r}
+pdf('~/Downloads/tmp.pdf', width=7, height=7)
+plot_grid(coverage_p, pi_p,align_p, nrow = 4, align='hv',rel_heights=c(1,1,3))
+dev.off()
+```
+
+Part b
+```{r}
+align_p <- ggplot(tig404) +
+  
+  geom_rect(aes(xmin=start,
+              xmax=end,
+              ymin=nrow(paf)+1,
+              ymax=nrow(paf)+10,
+              fill=is_gi),
+              color='black', data=tig404_df) +
+  geom_rect(aes(xmin=target_start,
+              xmax=target_end,
+              ymin=rank - 0.5,
+              ymax=rank + 0.5), 
+            fill='#7E6148FF',data=paf) +
+                
+  labs(x='locus (bp)') +
+  scale_fill_manual(values=c('#8491B4FF', '#F39B7FFF', '#00A087FF')) +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0), breaks=c(5000, 10000, 15000, 20000, 25000, 29205)) +
+  theme(legend.position='none',
+              plot.title = element_text(face="bold", size=16, hjust=0),
+              axis.title.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.line.y=element_blank(),
+          axis.title.x=element_text(size=16, face='bold'))
+  
+pdf('~/Downloads/tmp.pdf', width=7, height=7)
+align_p
+dev.off()
+```
+
+now the inset
+```{r}
+
+coverage_windows_zoom <- coverage %>%
+  filter(pos>13000 & pos <17000) %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=50, by=25, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=50, by=25, FUN=max, align="left"),
+      median_coverage = rollapply(.$coverage, width=50, by=25, FUN=median, align="left")
+     )
+  )
+
+
+zoom_cov <-ggplot(coverage_windows_zoom, aes(x=window.start, y=median_coverage)) + 
+  geom_bar(stat = 'identity', fill='#E64B35FF', color='#E64B35FF') + 
+  scale_y_continuous(expand = c(0,0), breaks=c(0, max(coverage_windows_zoom$median_coverage))) + 
+  scale_x_continuous(expand = c(0,0), limits=c(13000,17000)) +
+  labs(y='coverage') +
+  theme(legend.position='none',
+              axis.title.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.text.y=element_text(size=16),
+              axis.title.y=element_text(size=16, face='bold'))
+
+
+align_p_zoom <- ggplot(tig404) +
+  
+  geom_rect(aes(xmin=start,
+              xmax=end,
+              ymin=nrow(paf)+1,
+              ymax=nrow(paf)+10,
+              fill=is_gi),
+              color='black', data=tig404_df) +
+  geom_rect(aes(xmin=target_start,
+              xmax=target_end,
+              ymin=rank - 0.5,
+              ymax=rank + 0.5), 
+            fill='#7E6148FF', data=paf) +
+                
+  labs(x='locus (bp)') +
+  scale_fill_manual(values=c('#8491B4FF', '#F39B7FFF', '#00A087FF')) +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0), limits=c(13000,17000)) +
+  theme(legend.position='none',
+              plot.title = element_text(face="bold", size=16, hjust=0),
+              axis.title.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.line.y=element_blank(),
+          axis.title.x=element_text(size=16, face='bold'))
+
+pdf('../../figures/Figure3b_inset.pdf', width=7, height=7)
+
+dev.off()
+```

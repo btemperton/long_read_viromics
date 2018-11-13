@@ -1,0 +1,135 @@
+---
+title: "Investigating_GIs"
+author: "Ben Temperton"
+date: "05/11/2018"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggsci)
+library(magrittr)
+source('useful.functions.R')
+```
+
+```{r}
+
+tmp <- read_tsv('./data/hybrid.viral.vs.L4.sorted.98pc.windows.merged.txt')
+tmp$type <- 'hybrid'
+tmp$cutoff <- 98
+
+tmp2 <- read_tsv('./data/hybrid.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp2$type <- 'hybrid'
+tmp2$cutoff <- 95
+
+tmp3 <- read_tsv('./data/hybrid.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp3$type <- 'hybrid'
+tmp3$cutoff <- 92
+
+tmp4 <- read_tsv('./data/short.viral.vs.L4.sorted.98pc.windows.merged.txt')
+tmp4$type <- 'short'
+tmp4$cutoff <- 98
+
+tmp5 <- read_tsv('./data/short.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp5$type <- 'short'
+tmp5$cutoff <- 95
+
+tmp6 <- read_tsv('./data/short.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp6$type <- 'short'
+tmp6$cutoff <- 92
+
+tmp7 <- read_tsv('./data/long.viral.vs.L4.sorted.98pc.windows.merged.txt')
+tmp7$type <- 'long'
+tmp7$cutoff <- 98
+
+tmp8 <- read_tsv('./data/long.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp8$type <- 'long'
+tmp8$cutoff <- 95
+
+tmp9 <- read_tsv('./data/long.viral.vs.L4.sorted.95pc.windows.merged.txt')
+tmp9$type <- 'long'
+tmp9$cutoff <- 92
+
+
+final_df <- tmp %>% 
+  bind_rows(tmp2) %>% 
+  bind_rows(tmp3) %>%
+  bind_rows(tmp4) %>%
+  bind_rows(tmp5) %>%
+  bind_rows(tmp6) %>%
+  bind_rows(tmp7) %>%
+  bind_rows(tmp8) %>%
+  bind_rows(tmp9)
+
+summary_df <- final_df %>% group_by(type, cutoff) %>% 
+  summarise(median_length=median(gi_length), 
+            IQR_length=IQR(gi_length),
+            number_of_GIs=n(),
+            max_GI_length=max(gi_length))
+
+```
+
+```{r}
+library(ggbeeswarm)
+final_df$cutoff<-as.factor(final_df$cutoff)
+final_df$type<-factor(final_df$type, levels=c('short', 'hybrid', 'long'))
+p1<- ggplot(final_df, aes(y=gi_length, x=type, fill=cutoff)) +
+  geom_boxplot() + 
+  coord_trans(y = "log10") +
+  labs(y='Length of Genomic Island (bp)', x='Assembly Type') +
+  theme(axis.title = element_text(size=16, face='bold'),
+        axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=16)) + 
+  scale_fill_npg()
+```
+
+```{r}
+per_kb<- final_df %>% group_by(type, cutoff, contig, length) %>%
+  summarise(tot_length=sum(gi_length), num_GIs=n()) %>%
+  mutate(kb_gi_per_kb_genome=(tot_length/1000)/(length/1000))
+
+p2<- ggplot(per_kb, aes(y=kb_gi_per_kb_genome, x=type, fill=cutoff)) +
+  geom_boxplot() + 
+  #coord_trans(y = "log10") +
+  labs(y='Kbp of GI per Kbp of Genome', x='Assembly Type') +
+  theme(axis.title = element_text(size=16, face='bold'),
+        axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=16)) + 
+  scale_fill_npg()
+```
+
+```{r}
+per_kb$combined_factor<-with(per_kb, interaction(type, cutoff))
+pairwise.wilcox.test(per_kb$kb_gi_per_kb_genome, per_kb$combined_factor, p.adj='bonferroni')
+```
+
+```{r}
+final_df$combined_factor<-with(final_df, interaction(type, cutoff))
+pairwise.wilcox.test(final_df$gi_length, final_df$combined_factor, p.adj='bonferroni')
+```
+
+```{r}
+per_kb %>% group_by(type, cutoff) %>% summarise(total_genome_length=sum(length), total_num_gis=sum(num_GIs), total_length_GIs=sum(tot_length)) %>% mutate(tot_gi_kb_per_genome_kb=(total_length_GIs/1000)/(total_genome_length/1000), num_GIs_per_kb=total_num_gis/(total_genome_length/1000))
+```
+
+```{r}
+library(boot)
+boot_median <- function(x) {
+  median(sample(x, replace=TRUE))
+}
+
+calculate_effect_size<-function(x, y, n=1000, conf_level=0.95){
+  lower_percentile <- (1-conf_level)/2
+  upper_percentile <- 1-((1-conf_level)/2)
+  
+  x_median<-replicate(n, boot_median(na.omit(x)))
+  y_median<-replicate(n, boot_median(na.omit(y)))
+  diff <- y_median - x_median
+  low_CI <- quantile(diff, probs=lower_percentile)
+  high_CI <- quantile(diff, probs=upper_percentile)
+  return(list(effect=round(median(diff), digits=2), low_CI=round(low_CI, digits=2), high_CI=round(high_CI, digits=2)))
+}
+
+

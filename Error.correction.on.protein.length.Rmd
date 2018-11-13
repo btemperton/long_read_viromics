@@ -79,6 +79,7 @@ library(tidyverse)
 library(magrittr)
 library(cowplot)
 library(ggsci)
+library(ggridges)
 
 lengths_df <- read_tsv('../../data/L4.virome/error_correction/complete.start.stop.tsv', col_names=FALSE) %>% 
   set_colnames(c('type', 'start', 'stop')) %>%
@@ -91,12 +92,142 @@ lengths_df <- read_tsv('../../data/L4.virome/error_correction/complete.start.sto
   filter(type !='Pilon corrected long reads')
 
 
-ggplot(lengths_df, aes(y=length, x=reorder(type, length, FUN=median), fill=type)) + geom_boxplot(outlier.shape=NA) +
+
+ggplot(lengths_df %>% filter(type != 'pilon.corrected') %>%
+         filter(type != 'vSAG'), aes(y=length, x=reorder(type, length, FUN=median), fill=type)) + geom_boxplot(outlier.shape=NA) +
   coord_flip() +
-  labs(y='Protein lengths (aa)', x='Type', caption='Proteins > 400 aa have been removed') +
+  labs(y='Predicted Protein lengths (aa)', x='Type', caption='Proteins > 400 aa have been removed') +
   theme(legend.position = "none",
         axis.title.y = element_blank(), 
         axis.title.x = element_text(size=16, face='bold'),
         axis.text.x = element_text(size=14),
         axis.text.y = element_text(size=16)) + scale_fill_npg()
+```
+
+Let's do some funky effect size stuff:
+
+```{r}
+
+
+effect_size_df <- read_tsv('../../data/L4.virome/error_correction/complete.start.stop.no.pilon.tsv', col_names=FALSE) %>% 
+  set_colnames(c('type', 'start', 'stop')) %>%
+  mutate(length=round((stop-start)/3)) %>%
+  mutate(tech=ifelse(type %in% c('L4_pilon', 'canu corrected long reads', 'raw long reads'), 'long_read',
+                     ifelse(type %in% c('GOV', 'L4_hybrid', 'L4_short'), 'DBG', 
+                            ifelse(type=='vSAG', 'Single Viral Genome', 'RefSeq')))) %>%
+  mutate(type=as.factor(type)) %>%
+  select(type, length) %>%
+  na.omit()
+
+```
+This is taken from [here](http://thenode.biologists.com/quantification-of-differences-as-alternative-for-p-values/research/)
+```{r}
+#Function that resamples a vector (with replacement) and calculates the median value
+boot_median = function(x) {
+  median(sample(x, 1000, replace = TRUE))
+}
+
+#Number of bootstrap samples
+nsteps=1000
+
+#Confidence level
+Confidence_Percentage = 95
+Confidence_level = Confidence_Percentage/100
+
+alpha=1-Confidence_level
+lower_percentile=(1-Confidence_level)/2
+upper_percentile=1-((1-Confidence_level)/2)
+
+i=0
+
+#Generate a dataframe that keeps a summary of the data
+df_summary <- data.frame(Type=levels(factor(effect_size_df$type)), 
+                         n=tapply(effect_size_df$length, effect_size_df$type, length),
+                         median=tapply(effect_size_df$length, effect_size_df$type, median))
+
+#Generate a dataframe that collects all bootstrapped median values
+df_all_new_medians <- data.frame(Type=levels(factor(effect_size_df$type)), resampled_median=tapply(effect_size_df$length, effect_size_df$type, boot_median), id=i)
+
+#####################################################################################
+######################## Calculate Median and 95%CI by bootstrap ###################
+
+#Perform the resampling nsteps number of times (typically 1,000-10,000x)
+for (i in 1:nsteps) {
+
+	#Caclulate the median from a boostrapped sample (resampled_median) and add to the dataframe
+	df_boostrapped_median <- data.frame(Type=levels(factor(effect_size_df$type)), resampled_median=tapply(effect_size_df$length, effect_size_df$type, boot_median), id=i)
+	
+	#Add the new median to a datafram that collects all the resampled median values
+	df_all_new_medians <- bind_rows(df_all_new_medians, df_boostrapped_median)
+}
+
+#Calculate the confidence interval of the boostrapped medians, based on percentiles, and add to the dataframe that summarizes the data
+df_summary$ci_median_hi <- tapply(df_all_new_medians$resampled_median, 
+                                  df_all_new_medians$Type, quantile, probs=upper_percentile)
+df_summary$ci_median_lo <- tapply(df_all_new_medians$resampled_median, df_all_new_medians$Type, quantile, probs=lower_percentile)
+
+############ Generate dataframe with differences between the Median and 95%CI  ######
+
+#Order by Type
+df_all_new_medians<-df_all_new_medians[order(df_all_new_medians$Type),]
+
+#Convert the boostrapped dataset from long to wide format
+df_spread <- spread(df_all_new_medians, key=Type, value=resampled_median)
+
+#Subtract the Column with header "Refseq.caudovirales" from the other columns and move these 'differences' into a new dataframe
+df_spread_differences <- df_spread[,2:ncol(df_spread)] - df_spread[,"Refseq.caudovirales"]
+
+#Convert the dataframe with differences between medians into a long format
+df_differences <- gather(df_spread_differences, Type, diff_median)
+
+#Calculate the summary of the differences and put these values in a dataframe 'df_diff_summary'
+df_diff_summary <- data.frame(Type=levels(factor(effect_size_df$type)), diff_median=tapply(df_differences$diff_median, df_differences$Type, median))
+
+#Determine the CI of the differences, based on percentiles, and add to the dataframe that summarizes the differences
+df_diff_summary$ci_median_hi <- tapply(df_differences$diff_median, df_differences$Type, quantile, probs=upper_percentile)
+df_diff_summary$ci_median_lo <- tapply(df_differences$diff_median, df_differences$Type, quantile, probs=lower_percentile)
+
+#Sort dataframe Type according to median value
+df_summary$Type <- reorder (df_summary$Type, df_summary$median)
+effect_size_df$type <- reorder (effect_size_df$type, effect_size_df$length, median)
+df_differences$Type <-reorder(df_differences$Type, df_differences$diff_median, median)
+
+```
+
+```{r}
+source('geom_flat_violin.R')
+require(ggplot2)
+require(gridExtra)
+require(tidyr)
+require(ggbeeswarm)
+
+effectplot <- ggplot(df_differences, aes(x = Type, y = diff_median))+
+  geom_flat_violin(aes(x=Type, fill=Type),
+                   position = position_nudge(x = 0, y = 0), 
+                   color=NA,
+                   scale = "width", 
+                   alpha =0.7, data = df_differences) + 
+  geom_linerange(aes(y= diff_median, ymin = ci_median_lo, ymax = ci_median_hi), 
+                 color="black", size =1, data = df_diff_summary) +
+  geom_point(aes(y = diff_median), shape = 21,color = "black",fill=NA,size = 3,data = 
+               df_diff_summary)+
+  geom_hline(yintercept = 0, col = "black", size = .5) +
+  #ggtitle(paste("Difference and ",Confidence_Percentage,"%CI",sep=""))+
+  ylab("Difference [aa]")+theme_light(base_size = 14) + 
+  theme(panel.border = element_rect(size = 0.5, 
+                                    linetype = "solid", 
+                                    colour = "black",fill=NA)) + 
+#Removing labels from effect size plot for better alignment
+  #theme(axis.text.y = element_text(size=0)) +
+  #labs(x = NULL)+
+#Set the axis limits here - autoscale if not set
+#ylim(-0.05,0.3)+
+  theme(legend.position="none",
+        axis.title.y = element_blank(), 
+        axis.title.x = element_text(size=16, face='bold'),
+        axis.text.x = element_text(size=14),
+        axis.text.y = element_text(size=14))+
+  coord_flip()+
+  scale_fill_npg() +
+  NULL
 ```

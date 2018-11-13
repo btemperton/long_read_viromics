@@ -290,29 +290,11 @@ library(zoo)
 coverage<-read_tsv('../../data/L4.virome/gi_search/per.position.coverage.tig404.tsv', col_names=FALSE) %>% 
   set_colnames(c('contig', 'position', 'coverage')) 
 
-slideFunct <- function(data, name='test', window=500, step=1, cutoff=0.2){
-  
-  total <- length(data)
-  spots <- seq(from=1, to=(total-window), by=step)
-  result <- vector(length = length(spots))
-  start <- vector(length = length(spots))
-  end <- vector(length = length(spots))
-  for(i in 1:length(spots)){
-    start[i] <- i * step - step +1
-    result[i] <- median(data[spots[i]:(spots[i]+window)])
-    end[i] <- i * step - step + window
-  }
-  median_value=median(data)
-  df<-data.frame('contig'=name, 
-                 'start'=start, 'end'=end,
-                 'window_median_coverage'=result,
-                 'contig_median_coverage'=median_value,
-                 'potential_GI'= result < median_value * cutoff)
-  return(df)
-}
 
 windows<-slideFunct(coverage$coverage, name='VIRSorter_tig00000404_pilon-cat_1')
 rle(windows$potential_GI)
+
+
 ```
 
 ```{r}
@@ -323,7 +305,7 @@ windows_coverage<- coverage %>% group_by(contig) %>%
     data.frame(
       window.start = rollapply(.$position, width=100, by=50, FUN=min, align="left"),
       window.end = rollapply(.$position, width=100, by=50, FUN=max, align="left"),
-      coverage = rollapply(.$coverage, width=100, by=50, FUN=mean, align="left")
+      coverage = rollapply(.$coverage, width=100, by=50, FUN=median, align="left")
       )
   )
 

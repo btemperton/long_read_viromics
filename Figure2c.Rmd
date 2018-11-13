@@ -1,0 +1,173 @@
+---
+title: "Figure2C"
+author: "Ben Temperton"
+date: "20/06/2018"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#Let's first do the necessary data-wrangling that is needed:
+
+library(tidyverse)
+library(cowplot)
+library(magrittr)
+library(ggsci)
+library(scales)
+
+#show the palette
+show_col(pal_npg('nrc')(10))
+```
+
+
+```{r}
+c220 <- read_csv('./data/all.1k.contigs.c80.i95.clstr.combined.dataset.csv') %>% 
+  filter(cluster_id=='Cluster_220') %>%
+  filter(cluster_member_type == 'S') %>%
+  arrange(desc(ref_seq_start)) %>%
+  mutate(rank = row_number(desc(ref_seq_start)))
+```
+
+Now let's get the GIs for this contig
+
+```{r}
+gi<-read_csv('./data/scratch/VIRSorter_H_NODE_209_length_65047_cov_67_043022-cat_1.windows.csv.gz')
+rle(gi$potential_GI)
+```
+
+
+Now we can load the nucleotide diversity
+```{r}
+library(zoo)
+nuc_d <- read_tsv('./data/scratch/L4.contigs_filtered_MINCOV_pi_and_subsamples_data.tsv') %>%
+  filter(grepl('H_NODE_209_', contig))
+
+tmp<-data.frame(pos=1:65047, pi=0)
+tmp[nuc_d$pos, ]$pi<-nuc_d$pi
+
+nuc_d_windows <- tmp %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=100, by=50, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=100, by=50, FUN=max, align="left"),
+      max_pi = rollapply(.$pi, width=100, by=50, FUN=max, align="left")
+     )
+  )
+
+nuc_d_windows[nuc_d_windows$max_pi==0,]$max_pi<-NA
+
+pi_p<-ggplot(nuc_d_windows, aes(x=window.start, y=max_pi)) + 
+  geom_bar(stat = 'identity', fill='#4DBBD5FF', color='#4DBBD5FF') + 
+  scale_y_continuous(expand = c(0,0), breaks=c(0, 0.3)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  labs(y=expression(pi['max'])) +
+  theme(legend.position='none',
+              axis.title.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.text.y=element_text(size=16),
+              axis.title.y=element_text(size=20, face='bold'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+```
+
+
+Now we can get the coverage
+
+```{r}
+library(Rsamtools)
+bamfile<-BamFile('./data/scratch/h_node_209.map.sorted.bam')
+p_param<-PileupParam(max_depth=10000, # default value is very low @ 250
+                     distinguish_strand=FALSE,
+                     min_nucleotide_depth=5,
+                     min_mapq=15,
+                     min_base_quality=10) 
+param<-ScanBamParam(which=GRanges('H_NODE_209_length_65047_cov_67.043022', IRanges(start=1, end=65047)))
+coverage<-pileup(bamfile, scanBamParam=param, pileupParam=p_param) %>%
+  group_by(pos) %>%
+  summarise(coverage=sum(count))
+
+coverage_windows <- coverage %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=100, by=50, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=100, by=50, FUN=max, align="left"),
+      median_coverage = rollapply(.$coverage, width=100, by=50, FUN=median, align="left")
+     )
+  )
+
+coverage_p<-ggplot(coverage_windows, aes(x=window.start, y=median_coverage)) + 
+  geom_bar(stat = 'identity', fill='#E64B35FF', color='#E64B35FF') + 
+  scale_y_continuous(expand = c(0,0), breaks=c(0, 4000)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  labs(y='coverage') +
+  theme(legend.position='none',
+              axis.title.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.text.y=element_text(size=16),
+              axis.title.y=element_text(size=16, face='bold'),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+```
+
+```{r}
+p<-ggplot(c220)
+
+# draw the alignment
+align_p<- p + geom_rect(aes(xmin=1,
+              xmax=50049,
+              ymin=nrow(c220)+2 - 1,
+              ymax=nrow(c220)+2 + 1),
+              fill='#8491B4FF',
+              color='black') +
+  
+        geom_rect(aes(xmin=50050,
+              xmax=50050+1370,
+              ymin=nrow(c220)+2 - 1,
+              ymax=nrow(c220)+2 + 1),
+              fill='#F39B7FFF',
+              color='black') +
+        geom_rect(aes(xmin=50050+1370+1,
+              xmax=50050+1370+1+5093,
+              ymin=nrow(c220)+2 - 1,
+              ymax=nrow(c220)+2 + 1),
+              fill='#8491B4FF',
+              color='black') +
+        geom_rect(aes(xmin=50050+1370+1+5093+1,
+              xmax=50050+1370+1+5093+1+266,
+              ymin=nrow(c220)+2 - 1,
+              ymax=nrow(c220)+2 + 1),
+              fill='#F39B7FFF',
+              color='black') +
+        geom_rect(aes(xmin=50050+1370+1+5093+1+266+1,
+              xmax=65047,
+              ymin=nrow(c220)+2 - 1,
+              ymax=nrow(c220)+2 + 1),
+              fill='#8491B4FF',
+              color='black') +
+  
+  geom_rect(aes(xmin=ref_seq_start,
+                xmax=ref_seq_end,
+                ymin=rank - 0.5,
+                ymax=rank + 0.5),
+                fill='#00A087FF',
+                color='black') +
+                
+  labs(x='locus (bp)') +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  theme(legend.position='none',
+              plot.title = element_text(face="bold", size=16, hjust=0),
+              axis.title.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.line.y=element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+```
+
+```{r}
+plot_grid(coverage_p, pi_p, align_p, nrow = 3, align='hv',rel_heights=c(1,1,2))
+```

@@ -1,0 +1,117 @@
+---
+title: "H_NODE_6 Figure"
+author: "Ben Temperton"
+date: "15/06/2018"
+output: html_document
+---
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(magrittr)
+library(GenomicRanges)
+library(dplyr)
+library(data.table)
+library(zoo)
+library(ggsci)
+source('./useful.functions.R')
+
+df<-read_tsv('./data/H_NODE_6.coverage.per.base.csv', col_names=F) %>% 
+  set_colnames(c('contig', 'position', 'coverage'))
+
+windows_coverage<- df %>% group_by(contig) %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$position, width=200, by=100, FUN=min, align="left"),
+      window.end = rollapply(.$position, width=200, by=100, FUN=max, align="left"),
+      coverage = rollapply(.$coverage, width=200, by=100, FUN=median, align="left")
+      )
+  )
+
+
+```
+
+```{r}
+library(cowplot)
+ggplot(windows_coverage, aes(x=window.start, y=sqrt(coverage))) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x =element_blank())
+```
+
+# Calculation of per-base entropy:
+
+Shannon Entropy of $A$ is defined as
+
+$$
+H(A)= - \sum^{n}_{i=1}p_{i}log_{2}p_{i}
+$$
+where $p_{i} is the probability of a base in a given position
+
+The code was assisted by the site [here](https://seqqc.wordpress.com/2015/03/10/calculate-nucelotide-frequency-with-rsamtools-pileup/)
+```{r}
+library(Rsamtools)
+library(tidyverse)
+bamfile<-BamFile('~/Downloads/H_NODE_6.map.sorted.bam')
+p_param<-PileupParam(max_depth=10000, # default value is very low @ 250
+                     distinguish_strand=FALSE,
+                     min_nucleotide_depth=5,
+                     min_mapq=15,
+                     min_base_quality=10) 
+param<-ScanBamParam(which=GRanges('VIRSorter_H_NODE_6_length_316126_cov_21_864433-circular-cat_2', IRanges(start=1, end=316126)))
+df<- pileup(bamfile, scanBamParam=param, pileupParam=p_param) %>% 
+  select(-5) %>% 
+  group_by(seqnames, pos) %>%
+  mutate(probability=count/sum(count)) %>%
+  summarise(shannon_entropy= -1*sum(probability*log2(probability)))
+write_tsv(df, '~/data/h_node_6.per_base.entropy.tsv')
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(zoo)
+library(ggsci)
+
+shannon_windows<- df %>% group_by(seqnames) %>%
+  do(
+    data.frame(
+      window.start = rollapply(.$pos, width=200, by=100, FUN=min, align="left"),
+      window.end = rollapply(.$pos, width=200, by=100, FUN=max, align="left"),
+      mean_entropy = rollapply(.$shannon_entropy, width=200, by=100, FUN=mean, align="left")
+     )
+  )
+
+```
+
+```{r}
+
+coverage<-ggplot(windows_coverage, aes(x=window.start, y=sqrt(coverage))) +
+  geom_bar(stat='identity', color='#00A08744', fill='#00A08744') +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=16),
+        axis.line.x =element_blank())
+
+entropy<-ggplot(shannon_windows, aes(x=window.start, y=mean_entropy)) +
+  geom_bar(stat='identity', color='#3C5488FF', fill='#3C5488FF') +
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_x_continuous(expand = c(0,0)) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_text(size=16),
+        axis.line.x =element_blank())
+
+plot_grid(coverage, entropy, nrow = 2, align='hv', vjust=1)
+
+```
